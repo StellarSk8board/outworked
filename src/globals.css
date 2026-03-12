@@ -1,0 +1,123 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+@import "tailwindcss";
+
+:root {
+  --background: #0b1020;
+  --surface: #121a2b;
+  --surface-2: #182235;
+  --surface-3: #22304a;
+  --border: #334155;
+  --foreground: #e5edf7;
+  --muted: #b2c0d1;
+  --muted-2: #94a3b8;
+  --focus: #8b5cf6;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.font-pixel {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: 10px;
+}
+
+.input-pixel {
+  width: 100%;
+  min-height: 2.5rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  color: var(--foreground);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.input-mono {
+  width: 100%;
+  min-height: 2.5rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: 'Courier New', monospace;
+  color: var(--foreground);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.input-pixel:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+.input-pixel::placeholder { color: var(--muted-2); }
+
+.input-mono:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+.input-mono::placeholder { color: var(--muted-2); }
+
+.btn-pixel {
+  min-height: 2.25rem;
+  padding: 8px 12px;
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: #ffffff;
+  transition: filter 0.1s, transform 0.1s, box-shadow 0.15s;
+}
+.btn-pixel:focus-visible {
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+.btn-pixel:active { transform: scale(0.96); filter: brightness(0.85); }
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #111827; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+@keyframes marquee {
+  0%   { transform: translateX(0%); }
+  20%  { transform: translateX(0%); }
+  100% { transform: translateX(-100%); }
+}
+.animate-marquee {
+  animation: marquee 10s linear infinite;
+  padding-right: 40px;
+}

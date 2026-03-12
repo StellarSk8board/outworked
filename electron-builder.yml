@@ -1,0 +1,21 @@
+appId: com.outworked.app
+productName: Outworked
+directories:
+  output: dist
+files:
+  - electron/**/*
+  - dist-renderer/**/*
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+nsis:
+  oneClick: true
+  perMachine: false
