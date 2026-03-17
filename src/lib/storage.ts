@@ -1,9 +1,8 @@
-import { Agent, AgentSkill, ApiKeys, SubagentDef, McpServerInline, AGENT_COLORS, SPRITE_KEYS } from './types';
+import { Agent, AgentSkill, SubagentDef, McpServerInline, AGENT_COLORS, SPRITE_KEYS } from './types';
 import { readClaudeAgentFiles, writeClaudeAgentFile, getHomedir, AgentFileInfo, runClaudeCode } from './terminal';
 import { v4 as uuidv4 } from 'uuid';
 
 const AGENTS_KEY = 'outworked_agents';
-const SELECTED_AGENT_KEY = 'outworked_selected_agent';
 const SKILLS_KEY = 'outworked_skills';
 
 const DEFAULT_AGENTS: Agent[] = [
@@ -12,7 +11,7 @@ const DEFAULT_AGENTS: Agent[] = [
     name: 'Boss',
     role: 'Office Manager',
     personality:
-      'You are the Boss, the office orchestrator. You coordinate work across the team, delegate tasks to the right employees, create new specialists when needed, and keep everyone on track. For any non-trivial work request, use route_work to orchestrate the full pipeline. You speak with authority but are fair and encouraging.',
+      'You are the Boss, the office manager. Your ONLY role is delegation — you NEVER do implementation work yourself. You assign every task to the right employee using the Agent tool. You break complex requests into subtasks and delegate each one. You speak with authority but are fair and encouraging.',
     model: 'claude-code',
     provider: 'claude-code',
     skills: [],
@@ -50,7 +49,7 @@ export function createAgent(partial: Partial<Agent>, claudeCodeDefault?: boolean
   const idx = Math.floor(Math.random() * SPRITE_KEYS.length);
   return {
     id: uuidv4(),
-    name: 'New Employee',
+    name: makeAgentName(),
     role: 'Assistant',
     personality: 'You are a helpful AI assistant working in the office.',
     model: claudeCodeDefault ? 'claude-code' : 'gpt-5.4',
@@ -85,44 +84,11 @@ export function saveSkills(skills: AgentSkill[]): void {
   localStorage.setItem(SKILLS_KEY, JSON.stringify(skills));
 }
 
-// API keys in sessionStorage so they don't persist after tab close
-export function loadApiKeys(): ApiKeys {
-  if (typeof window === 'undefined') return { openai: '', anthropic: '', gemini: '', github: '' };
-  return {
-    openai: localStorage.getItem('outworked_key_openai') ?? '',
-    anthropic: localStorage.getItem('outworked_key_anthropic') ?? '',
-    gemini: localStorage.getItem('outworked_key_gemini') ?? '',
-    github: localStorage.getItem('outworked_key_github') ?? '',
-  };
-}
-
-export function saveApiKeys(keys: ApiKeys): void {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem('outworked_key_openai', keys.openai);
-  localStorage.setItem('outworked_key_anthropic', keys.anthropic);
-  localStorage.setItem('outworked_key_gemini', keys.gemini);
-  localStorage.setItem('outworked_key_github', keys.github);
-}
-
 export function resetProject(agents: Agent[]): Agent[] {
   const cleared = agents.map((a) => ({ ...a, history: [], todos: [], status: 'idle' as const, currentThought: '' }));
   saveAgents(cleared);
-  if (typeof window !== 'undefined') localStorage.removeItem(SELECTED_AGENT_KEY);
+  if (typeof window !== 'undefined') localStorage.removeItem('outworked_selected_agent');
   return cleared;
-}
-
-export function getSelectedAgentId(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(SELECTED_AGENT_KEY);
-}
-
-export function setSelectedAgentId(id: string | null): void {
-  if (typeof window === 'undefined') return;
-  if (id) {
-    localStorage.setItem(SELECTED_AGENT_KEY, id);
-  } else {
-    localStorage.removeItem(SELECTED_AGENT_KEY);
-  }
 }
 
 // ─── Claude Code agent file helpers ────────────────────────────
@@ -666,4 +632,10 @@ export async function syncClaudeSubagents(existingAgents: Agent[], workspaceDir?
   const result = [...manual, ...synced];
   saveAgents(result);
   return result;
+}
+
+
+export function makeAgentName() {
+  const names = ['Alex', 'Sam', 'Charlie', 'Taylor', 'Jordan', 'Morgan', 'Casey', 'Riley', 'Jamie', 'Drew'];
+  return names[Math.floor(Math.random() * names.length)];
 }

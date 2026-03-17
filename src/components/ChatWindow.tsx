@@ -1,22 +1,30 @@
 import { useState, useRef, useEffect } from 'react';
 import { Agent, AgentSkill, AgentTodo, /* ApiKeys, */ Message, MODELS, ToolCall } from '../lib/types';
 import { sendMessage } from '../lib/ai';
-import { executeTask, generateTodoList, /* routeTasks, */ routeTasksViaClaudeCode } from '../lib/orchestrator';
-import { createAgent } from '../lib/storage';
+import { executeTask, generateTodoList, routeTasks } from '../lib/orchestrator';
+import { createAgent, createClaudeAgentFile } from '../lib/storage';
 import { sendClaudeCodeInput, PermissionRequest } from '../lib/terminal';
+
+export interface OrchestrationDoneEvent {
+  success: number;
+  failed: number;
+  plan: string;
+  agents: string[];
+}
 
 interface ChatWindowProps {
   agent: Agent | null;
   agents: Agent[];
-  apiKeys?: Record<string, string>; // API keys disabled — kept for interface compat
   skills: AgentSkill[];
   onUpdateAgent: (agent: Agent) => void;
   onAddAgent: (agent: Agent) => void;
+  agentTeamsEnabled?: boolean;
+  onOrchestrationDone?: (event: OrchestrationDoneEvent) => void;
 }
 
 const EMPTY_KEYS = { openai: '', anthropic: '', gemini: '', github: '' };
 
-export default function ChatWindow({ agent, agents, skills, onUpdateAgent, onAddAgent }: ChatWindowProps) {
+export default function ChatWindow({ agent, agents, skills, onUpdateAgent, onAddAgent, agentTeamsEnabled, onOrchestrationDone }: ChatWindowProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
@@ -121,247 +129,214 @@ export default function ChatWindow({ agent, agents, skills, onUpdateAgent, onAdd
     }
 
     // ── Boss orchestrator flow ───────────────────────────────────
+    // The Boss ALWAYS delegates: plans tasks via JSON, then dispatches
+    // each task to the assigned employee as a separate Claude Code process.
     async function handleBossOrchestrate(bossAgent: Agent, userText: string): Promise<string> {
       const employees = agents.filter(a => !a.isBoss);
-      // const hasSubagents = employees.some(a => a.subagentDef);
 
-      // Always use Claude Code Agent Teams (API-key-based classic routing disabled)
-      return handleBossAgentTeams(bossAgent, userText, employees);
+      // ── Step 1: Plan ──
+      onUpdateAgent({ ...bossAgent, status: 'thinking', currentThought: '🧠 Planning task assignments...' });
+      setStreamingText('🧠 Analyzing the request and creating a plan...\n');
+      if (debugMode) addDebug(`[boss] Planning with ${employees.length} employees`);
 
-      /* === Classic orchestrator (commented out — requires API keys) ===
-      if (!hasSubagents) {
-        return handleBossClassic(bossAgent, userText);
-      }
-      */
-    }
+      const routerModel = { model: bossAgent.model, provider: bossAgent.provider };
+      const result = await routeTasks(userText, employees, EMPTY_KEYS, routerModel);
 
-    // Boss flow using Claude Code Agent Teams
-    async function handleBossAgentTeams(bossAgent: Agent, userText: string, employees: Agent[]): Promise<string> {
-      onUpdateAgent({ ...bossAgent, status: 'thinking', currentThought: '🤖 Claude Code Agent Teams: orchestrating…' });
-      setStreamingText('⚡ **Claude Code Agent Teams** — delegating work to subagent employees…\n\n');
+      if (debugMode) addDebug(`[boss] Plan: ${result.plan}, ${result.assignments.length} assignments, ${result.newAgents.length} new agents`);
 
-      // Keep a live list so dynamically-created agents get reset to idle at the end
-      const activeEmployees = [...employees];
-
-      try {
-        const result = await routeTasksViaClaudeCode(
-          userText,
-          employees,
-          {
-            onTeamEvent: (event) => {
-              if (event.type === 'text' && event.text) {
-                setStreamingText(prev => prev + event.text);
-              }
-              if (debugMode) addDebug(`[team] type=${event.type}${event.agentName ? ` agent=${event.agentName}` : ''}${event.text ? ` text=${event.text.slice(0, 120)}` : ''}`);
-            },
-            onAgentStatus: (agentName, status, thought) => {
-              // Check both original employees and dynamically-created ones
-              const emp = activeEmployees.find(a => a.name.toLowerCase() === agentName.toLowerCase());
-              if (emp) {
-                const mappedStatus = status === 'working' ? 'working'
-                  : status === 'waiting-input' ? 'waiting-input'
-                  : status === 'waiting-approval' ? 'waiting-approval'
-                  : status === 'stuck' ? 'stuck'
-                  : 'idle';
-                onUpdateAgent({
-                  ...emp,
-                  status: mappedStatus,
-                  currentThought: thought || '',
-                });
-              }
-            },
-            onNewAgent: (agentName, description) => {
-              // Dynamically create a new employee in the UI
-              const newAgent = createAgent({
-                name: agentName,
-                role: description || 'Specialist',
-                personality: `You are ${agentName}, a specialist created to help with: ${description}`,
-                position: {
-                  x: Math.floor(Math.random() * 10) + 2,
-                  y: Math.floor(Math.random() * 6) + 2,
-                },
-              }, true);
-              activeEmployees.push(newAgent);
-              onAddAgent(newAgent);
-              onUpdateAgent({ ...newAgent, status: 'working', currentThought: `Just hired! Working on: ${description}` });
-              setStreamingText(prev => prev + `\n\n👤 **New hire:** ${agentName} — ${description}\n`);
-            },
-            onPermissionRequest: (agentName, tool, description, reqId) => {
-              // Surface as a team-level permission banner
-              if (agentName) {
-                const emp = activeEmployees.find(a => a.name.toLowerCase() === agentName.toLowerCase());
-                if (emp) {
-                  onUpdateAgent({ ...emp, status: 'waiting-approval', currentThought: `🔒 Needs approval: ${tool}` });
-                }
-              }
-              setStreamingText(prev => prev + `\n🔒 **Permission needed${agentName ? ` (${agentName})` : ''}:** ${tool} — ${description}\n`);
-              // Set pendingPermission so the approval UI appears and user can respond
-              if (reqId != null) {
-                setPendingPermission({ reqId, tool, description });
-              }
-            },
-          },
-          abortRef.current?.signal,
-          debugMode ? (line: string) => addDebug(line) : undefined,
-          bossAgent.sessionId,
-        );
-
-        // Save the session ID on the boss agent for conversation continuity
-        if (result.sessionId) {
-          bossAgent.sessionId = result.sessionId;
-          onUpdateAgent({ ...bossAgent, sessionId: result.sessionId });
-        }
-
-        // Reset all employees (including dynamically-created ones) to idle
-        for (const emp of activeEmployees) {
-          onUpdateAgent({ ...emp, status: 'idle', currentThought: '' });
-        }
-
-        return result.text;
-      } catch (err) {
-        // Reset all employees to idle on error too
-        for (const emp of activeEmployees) {
-          onUpdateAgent({ ...emp, status: 'idle', currentThought: '' });
-        }
-        // Agent teams error — no fallback to classic orchestration (API keys disabled)
-        const errMsg = err instanceof Error ? err.message : 'Unknown error';
-        throw new Error(`Agent teams error: ${errMsg}`);
-      }
-    }
-
-    /* === Classic Boss orchestrator flow (commented out — requires API keys) ===
-    async function handleBossClassic(bossAgent: Agent, userText: string): Promise<string> {
-      const routerModel = { model: agent!.model, provider: agent!.provider };
-
-      // Step 1: Route through orchestrator
-      onUpdateAgent({ ...bossAgent, status: 'thinking', currentThought: '🧠 Analyzing and planning...' });
-      setStreamingText('🧠 Analyzing the request and planning task assignments...\n');
-
-      const result = await routeTasks(
-        userText,
-        agents.filter(a => !a.isBoss),
-        EMPTY_KEYS,
-        routerModel,
-      );
-
-      // Step 2: Create any new agents
-      const createdAgents: Agent[] = [];
+      // ── Step 2: Create new agents if needed ──
+      const newAgents: Agent[] = [];
+      const wsDir = localStorage.getItem('outworked_workspace_dir') || undefined;
       for (const spec of result.newAgents) {
-        const exists = agents.find(a => a.name.toLowerCase() === spec.name.toLowerCase());
-        if (exists) continue;
+        if (employees.find(a => a.name.toLowerCase() === spec.name.toLowerCase())) continue;
+        if (newAgents.find(a => a.name.toLowerCase() === spec.name.toLowerCase())) continue;
         const newAgent = createAgent({
           name: spec.name,
           role: spec.role,
           personality: spec.personality,
-          model: routerModel.model,
-          provider: routerModel.provider,
-          position: {
-            x: Math.floor(Math.random() * 10) + 2,
-            y: Math.floor(Math.random() * 6) + 2,
-          },
-        });
-        createdAgents.push(newAgent);
+          position: { x: Math.floor(Math.random() * 10) + 2, y: Math.floor(Math.random() * 6) + 2 },
+        }, true);
+        newAgents.push(newAgent);
         onAddAgent(newAgent);
+        // Persist agent file so Claude Code can use it
+        createClaudeAgentFile(newAgent, wsDir);
       }
 
-      const allAgents = [...agents, ...createdAgents];
+      const allEmployees = [...employees, ...newAgents];
 
-      // Step 3: Resolve assignments
-      const resolvedAssignments = result.assignments.map(a => {
-        if (a.agentId) return a;
-        const match = allAgents.find(ag => ag.name.toLowerCase() === a.agentName.toLowerCase());
-        return { ...a, agentId: match?.id ?? '' };
+      // ── Step 3: Resolve assignments ──
+      const assignments = result.assignments
+        .map(a => {
+          const match = allEmployees.find(ag => ag.name.toLowerCase() === a.agentName.toLowerCase());
+          return { ...a, agentId: match?.id ?? '' };
+        })
+        .filter(a => a.agentId);
+
+      if (assignments.length === 0) {
+        onUpdateAgent({ ...bossAgent, status: 'idle', currentThought: '' });
+        return 'I couldn\'t assign any tasks. Try hiring employees with the right skills first, then tell me what you need.';
+      }
+
+      // ── Step 4: Create todos on Boss ──
+      const bossTodos: AgentTodo[] = assignments.map((a, i) => ({
+        id: `boss-${Date.now()}-${i}`,
+        text: `→ ${a.agentName}: ${a.task}`,
+        status: 'pending' as const,
+        timestamp: Date.now(),
+      }));
+      onUpdateAgent({
+        ...bossAgent,
+        todos: [...(bossAgent.todos || []), ...bossTodos],
+        status: 'working',
+        currentThought: `📋 ${assignments.length} tasks to delegate`,
       });
 
-      // Stream progress
-      let progress = `📝 **Plan:** ${result.plan}\n📁 **Working directory:** ${result.workingDirectory}/\n`;
-      if (createdAgents.length > 0) {
-        progress += `👥 **New hires:** ${createdAgents.map(a => `${a.name} (${a.role})`).join(', ')}\n`;
+      // ── Show plan ──
+      let progress = `📝 **Plan:** ${result.plan}\n`;
+      if (newAgents.length > 0) {
+        progress += `👥 **New hires:** ${newAgents.map(a => `${a.name} (${a.role})`).join(', ')}\n`;
       }
-      progress += `\n**Assignments:**\n${resolvedAssignments.map(a => `- ${a.agentName}: ${a.task}`).join('\n')}\n`;
+      progress += `\n**Tasks:**\n${assignments.map(a => `- **${a.agentName}**: ${a.task}`).join('\n')}\n\n⏳ Executing tasks...\n`;
+      setStreamingText(progress);
 
-      if (resolvedAssignments.length === 0) {
-        return await handleBossFallbackChat(bossAgent, userText);
-      }
+      // ── Step 5: Execute tasks sequentially ──
+      const taskResults: { agentName: string; success: boolean; reply: string }[] = new Array(assignments.length);
 
-      setStreamingText(progress + '\n⏳ Executing tasks...\n');
-      onUpdateAgent({ ...bossAgent, status: 'working', currentThought: `📋 ${resolvedAssignments.length} tasks in progress...` });
-
-      const taskResults: { agentName: string; success: boolean; reply: string }[] = [];
-
-      const taskPromises = resolvedAssignments.map(async (assignment) => {
-        const targetAgent = allAgents.find(a => a.id === assignment.agentId);
-        if (!targetAgent) {
-          taskResults.push({ agentName: assignment.agentName, success: false, reply: 'Agent not found' });
-          return;
+      for (let idx = 0; idx < assignments.length; idx++) {
+        const assignment = assignments[idx];
+        const emp = allEmployees.find(a => a.id === assignment.agentId);
+        if (!emp) {
+          taskResults[idx] = { agentName: assignment.agentName, success: false, reply: 'Agent not found' };
+          continue;
         }
 
-        onUpdateAgent({ ...targetAgent, status: 'working', currentThought: `Planning: ${assignment.task.slice(0, 60)}...` });
+        // Mark boss todo in-progress
+        bossTodos[idx] = { ...bossTodos[idx], status: 'in-progress' };
+        onUpdateAgent({
+          ...bossAgent,
+          todos: [...(bossAgent.todos || []).filter(t => !bossTodos.some(bt => bt.id === t.id)), ...bossTodos],
+        });
 
+        // Generate sub-task checklist for the employee
+        onUpdateAgent({ ...emp, status: 'working', currentThought: `Planning: ${assignment.task.slice(0, 60)}...` });
+        if (debugMode) addDebug(`[boss] Generating todo list for ${emp.name}: ${assignment.task.slice(0, 100)}`);
+
+        let empTodos: AgentTodo[] = [];
         try {
-          const todos = await generateTodoList(targetAgent, assignment.task, EMPTY_KEYS, skills);
-          const agentWithTodos: Agent = {
-            ...targetAgent,
-            todos: [...(targetAgent.todos ?? []), ...todos.map(t => ({ ...t, status: 'in-progress' as const }))],
-          };
-          onUpdateAgent({ ...agentWithTodos, status: 'working', currentThought: `Working: ${assignment.task.slice(0, 60)}...` });
-
-          const { agent: updatedAgent, reply } = await executeTask(
-            agentWithTodos, assignment.task, EMPTY_KEYS,
-            (partial) => onUpdateAgent({ ...agentWithTodos, status: 'working', currentThought: partial.slice(0, 80) + (partial.length > 80 ? '...' : '') }),
-            undefined, skills, result.workingDirectory,
-          );
-
-          const todoIds = new Set(todos.map(t => t.id));
-          const finalAgent: Agent = {
-            ...updatedAgent,
-            todos: (updatedAgent.todos ?? []).map(t => todoIds.has(t.id) ? { ...t, status: 'done' as const } : t),
-          };
-          onUpdateAgent(finalAgent);
-          taskResults.push({ agentName: assignment.agentName, success: true, reply });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Unknown error';
-          onUpdateAgent({ ...targetAgent, status: 'idle', currentThought: '' });
-          taskResults.push({ agentName: assignment.agentName, success: false, reply: errMsg });
+          empTodos = await generateTodoList(emp, assignment.task, EMPTY_KEYS, skills);
+        } catch {
+          // Fallback: single todo
+          empTodos = [{ id: crypto.randomUUID(), text: assignment.task, status: 'pending', timestamp: Date.now() }];
         }
+
+        // Start with all todos as pending
+        let currentAgent: Agent = {
+          ...emp,
+          todos: [...(emp.todos ?? []), ...empTodos.map(t => ({ ...t, status: 'pending' as const }))],
+        };
+        onUpdateAgent({ ...currentAgent, status: 'working', currentThought: `Starting: ${assignment.task.slice(0, 60)}...` });
+
+        // Execute each sub-task one at a time
+        const replies: string[] = [];
+        let hadError = false;
+
+        for (let ti = 0; ti < empTodos.length; ti++) {
+          const todo = empTodos[ti];
+          if (debugMode) addDebug(`[boss] ${emp.name} step ${ti + 1}/${empTodos.length}: ${todo.text.slice(0, 80)}`);
+
+          // Mark this todo in-progress
+          currentAgent = {
+            ...currentAgent,
+            todos: currentAgent.todos.map(t => t.id === todo.id ? { ...t, status: 'in-progress' as const } : t),
+          };
+          onUpdateAgent({ ...currentAgent, status: 'working', currentThought: `[${ti + 1}/${empTodos.length}] ${todo.text.slice(0, 60)}` });
+
+          try {
+            const context = ti > 0
+              ? `\n\nContext from previous steps:\n${replies.map((r, i) => `Step ${i + 1}: ${r.slice(0, 200)}`).join('\n')}`
+              : '';
+            const { agent: updatedAgent, reply } = await executeTask(
+              currentAgent,
+              `[Step ${ti + 1}/${empTodos.length}] ${todo.text}${context}`,
+              EMPTY_KEYS,
+              (partial) => onUpdateAgent({ ...currentAgent, status: 'working', currentThought: `[${ti + 1}/${empTodos.length}] ${partial.slice(0, 70)}` }),
+              abortRef.current?.signal, skills,
+            );
+            replies.push(reply);
+
+            // Mark this todo done, update agent with new history
+            currentAgent = {
+              ...updatedAgent,
+              todos: updatedAgent.todos.map(t => t.id === todo.id ? { ...t, status: 'done' as const } : t),
+            };
+            onUpdateAgent(currentAgent);
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : 'Unknown error';
+            currentAgent = {
+              ...currentAgent,
+              todos: currentAgent.todos.map(t => t.id === todo.id ? { ...t, status: 'error' as const, error: errMsg } : t),
+            };
+            onUpdateAgent({ ...currentAgent, status: 'idle', currentThought: '' });
+            replies.push(`Error: ${errMsg}`);
+            hadError = true;
+            if (debugMode) addDebug(`[boss] ${emp.name} step ${ti + 1} failed: ${errMsg}`);
+            break; // Stop remaining steps on error
+          }
+        }
+
+        // Final state for this employee
+        onUpdateAgent({ ...currentAgent, status: 'idle', currentThought: '' });
+
+        if (!hadError) {
+          bossTodos[idx] = { ...bossTodos[idx], status: 'done' };
+          taskResults[idx] = { agentName: assignment.agentName, success: true, reply: replies.join('\n\n') };
+          if (debugMode) addDebug(`[boss] ${emp.name} completed all ${empTodos.length} steps`);
+        } else {
+          bossTodos[idx] = { ...bossTodos[idx], status: 'error' };
+          taskResults[idx] = { agentName: assignment.agentName, success: false, reply: replies.join('\n\n') };
+          if (debugMode) addDebug(`[boss] ${emp.name} failed`);
+        }
+      }
+
+      // ── Step 6: Summary ──
+      // Update boss todos (bossAgent is stale but bossTodos were mutated with correct statuses)
+      onUpdateAgent({
+        ...bossAgent,
+        todos: [...(bossAgent.todos || []).filter(t => !bossTodos.some(bt => bt.id === t.id)), ...bossTodos],
+        status: 'idle',
+        currentThought: 'All tasks completed',
       });
 
-      await Promise.all(taskPromises);
+      // NOTE: Do NOT reset employees here — the individual task handlers above
+      // already set each agent to idle with the correct todos/history.
+      // Spreading stale `emp` refs would overwrite their completed todos.
+
+      const successCount = taskResults.filter(t => t?.success).length;
+      const failCount = taskResults.filter(t => t && !t.success).length;
 
       const summaryParts = [progress, '\n---\n\n**Results:**\n'];
       for (const tr of taskResults) {
+        if (!tr) continue;
         const icon = tr.success ? '✅' : '❌';
-        summaryParts.push(`${icon} **${tr.agentName}:** ${tr.reply.slice(0, 400)}\n`);
+        summaryParts.push(`${icon} **${tr.agentName}:** ${tr.reply.slice(0, 500)}\n`);
       }
+      summaryParts.push(`\n---\n`);
+      summaryParts.push(failCount === 0
+        ? `✅ **All ${successCount} task${successCount !== 1 ? 's' : ''} completed successfully!**`
+        : `⚠️ **${successCount}/${successCount + failCount} tasks completed.** ${failCount} failed.`);
 
-      setStreamingText(summaryParts.join(''));
-      onUpdateAgent({ ...bossAgent, status: 'speaking', currentThought: 'Summarizing results...' });
+      const finalText = summaryParts.join('');
+      setStreamingText(finalText);
 
-      const summaryPrompt = `You just orchestrated the following work...`;
-      const bossForSummary: Agent = { ...bossAgent, history: [] };
-      const summary = await sendMessage(bossForSummary, summaryPrompt, EMPTY_KEYS, (partial) => setStreamingText(partial), abortRef.current?.signal, { useTools: false });
+      // Notify parent so it can show a toast over the office
+      onOrchestrationDone?.({
+        success: successCount,
+        failed: failCount,
+        plan: result.plan,
+        agents: assignments.map(a => a.agentName),
+      });
 
-      return summary;
-    }
-    === end commented-out classic boss flow === */
-
-    // Boss fallback: conversational response when there's nothing to orchestrate
-    async function handleBossFallbackChat(bossAgent: Agent, userText: string): Promise<string> {
-      const otherAgents = agents.filter(a => a.id !== agent!.id);
-      const roster = otherAgents.map(a => `- ${a.name} (${a.role})`).join('\n');
-      const extraSystemPrompt = `\n\n## Your Team\nCurrent employees:\n${roster}\n\nThe user's request doesn't seem to require delegating work. Respond conversationally.`;
-
-      return await sendMessage(
-        bossAgent,
-        userText,
-        EMPTY_KEYS,
-        (partial) => {
-          setStreamingText(partial);
-          onUpdateAgent({ ...bossAgent, status: 'speaking', currentThought: partial.slice(0, 80) + (partial.length > 80 ? '...' : '') });
-        },
-        abortRef.current?.signal,
-        { skills, extraSystemPrompt, useTools: false },
-      );
+      return finalText;
     }
 
     // ── Regular agent chat flow ──────────────────────────────────
@@ -545,24 +520,61 @@ export default function ChatWindow({ agent, agents, skills, onUpdateAgent, onAdd
           </div>
         )}
 
-        {agent.history.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[85%] px-2.5 py-1.5 rounded text-[12px] font-mono leading-7 whitespace-pre-wrap break-words ${
-                msg.role === 'user'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-slate-700 text-gray-100'
-              }`}
-            >
-              {msg.content}
+        {agent.history.map((msg, i) => {
+          // Detect boss orchestration results for special rendering
+          const isBossResult = msg.role === 'assistant' && agent.isBoss && msg.content.includes('**Results:**');
+          const allSucceeded = isBossResult && msg.content.includes('All') && msg.content.includes('completed successfully');
+
+          if (isBossResult) {
+            return (
+              <div key={i} className="flex justify-start">
+                <div className={`max-w-[90%] rounded-lg border overflow-hidden ${
+                  allSucceeded
+                    ? 'border-emerald-600/40 bg-emerald-950/30'
+                    : 'border-amber-600/40 bg-amber-950/20'
+                }`}>
+                  <div className={`px-3 py-1.5 border-b ${
+                    allSucceeded
+                      ? 'bg-emerald-900/30 border-emerald-700/30'
+                      : 'bg-amber-900/20 border-amber-700/30'
+                  }`}>
+                    <span className="text-[11px] font-pixel" style={{ color: allSucceeded ? '#34d399' : '#fbbf24' }}>
+                      {allSucceeded ? '✅ Tasks Complete' : '⚠️ Tasks Finished'}
+                    </span>
+                  </div>
+                  <div className="px-3 py-2 text-[12px] font-mono leading-7 whitespace-pre-wrap break-words text-gray-100">
+                    {msg.content}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[85%] px-2.5 py-1.5 rounded text-[12px] font-mono leading-7 whitespace-pre-wrap break-words ${
+                  msg.role === 'user'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-700 text-gray-100'
+                }`}
+              >
+                {msg.content}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {isStreaming && streamingText && (
           <div className="flex justify-start">
-            <div className="max-w-[85%] px-2.5 py-1.5 rounded text-[12px] font-mono leading-7 bg-slate-700 text-gray-100 whitespace-pre-wrap break-words">
+            <div className={`max-w-[85%] px-2.5 py-1.5 rounded text-[12px] font-mono leading-7 whitespace-pre-wrap break-words ${
+              streamingText.includes('completed successfully')
+                ? 'bg-emerald-950/30 border border-emerald-600/40 text-gray-100'
+                : 'bg-slate-700 text-gray-100'
+            }`}>
               {streamingText}
-              <span className="inline-block w-1.5 h-3 bg-gray-400 ml-0.5 animate-pulse align-middle" />
+              {!streamingText.includes('completed successfully') && !streamingText.includes('tasks completed') && (
+                <span className="inline-block w-1.5 h-3 bg-gray-400 ml-0.5 animate-pulse align-middle" />
+              )}
             </div>
           </div>
         )}

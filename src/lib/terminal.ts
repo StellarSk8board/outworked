@@ -109,6 +109,7 @@ export interface ClaudeCodeEvent {
   session_id?: string;
   result?: string;
   is_error?: boolean;
+  errors?: string[];
   duration_ms?: number;
   total_cost_usd?: number;
   usage?: {
@@ -240,6 +241,7 @@ export async function runClaudeCode(
 
   return new Promise<string>((resolve, reject) => {
     let fullOutput = '';
+    let stderrOutput = '';
 
     const removeChunk = api.claudeCode!.onChunk((id, chunk) => {
       if (id !== reqId) return;
@@ -249,7 +251,7 @@ export async function runClaudeCode(
 
     const removeStderr = api.claudeCode!.onStderr((id, data) => {
       if (id !== reqId) return;
-      // stderr is logged but not shown to the user as output
+      stderrOutput += data;
       console.warn('[Claude Code stderr]', data);
     });
 
@@ -257,9 +259,10 @@ export async function runClaudeCode(
       if (id !== reqId) return;
       cleanup();
       if (error) {
-        reject(new Error(`Claude Code error: ${error}`));
+        reject(new Error(`Claude Code error: ${error}${stderrOutput ? `\nstderr: ${stderrOutput.trim()}` : ''}`));
       } else if (code !== 0) {
-        reject(new Error(fullOutput || `Claude Code exited with code ${code}. Is the \`claude\` CLI installed?`));
+        const detail = stderrOutput.trim() || fullOutput || '';
+        reject(new Error(detail ? `Claude Code exited with code ${code}: ${detail}` : `Claude Code exited with code ${code}. Is the \`claude\` CLI installed?`));
       } else {
         resolve(fullOutput);
       }
@@ -316,6 +319,8 @@ export async function runClaudeCodeAdvanced(
 
   return new Promise((resolve, reject) => {
     let fullText = '';
+    let stderrText = '';
+    let resultErrors: string[] = [];
     let sessionId: string | undefined;
     let cost: number | undefined;
     let usage: { input_tokens: number; output_tokens: number } | undefined;
@@ -358,6 +363,9 @@ export async function runClaudeCodeAdvanced(
             // Handle result message (final)
             if (event.type === 'result') {
               if (event.result) fullText = event.result;
+              if (event.is_error && event.errors?.length) {
+                resultErrors = event.errors;
+              }
               sessionId = event.session_id;
               cost = event.total_cost_usd;
               if (event.usage) {
@@ -396,6 +404,7 @@ export async function runClaudeCodeAdvanced(
 
     const removeStderr = api.claudeCode!.onStderr((id, data) => {
       if (id !== reqId) return;
+      stderrText += data;
       callbacks.onStderr?.(data);
     });
 
@@ -408,8 +417,9 @@ export async function runClaudeCodeAdvanced(
         try {
           const event: ClaudeCodeEvent = JSON.parse(buffer.trim());
           callbacks.onEvent?.(event);
-          if (event.type === 'result' && event.result) {
-            fullText = event.result;
+          if (event.type === 'result') {
+            if (event.result) fullText = event.result;
+            if (event.is_error && event.errors?.length) resultErrors = event.errors;
             sessionId = event.session_id;
             cost = event.total_cost_usd;
           }
@@ -419,9 +429,10 @@ export async function runClaudeCodeAdvanced(
       }
 
       if (error) {
-        reject(new Error(`Claude Code error: ${error}`));
+        reject(new Error(`Claude Code error: ${error}${stderrText ? `\nstderr: ${stderrText.trim()}` : ''}`));
       } else if (code !== 0) {
-        reject(new Error(fullText || `Claude Code exited with code ${code}`));
+        const detail = resultErrors.join('; ') || stderrText.trim() || fullText || '';
+        reject(new Error(detail ? `Claude Code exited with code ${code}: ${detail}` : `Claude Code exited with code ${code}`));
       } else {
         resolve({ result: fullText, sessionId, cost, usage });
       }

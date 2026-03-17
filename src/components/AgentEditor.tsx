@@ -5,7 +5,6 @@ import { buildSubagentMd, generateAgentWithAI, parseSubagentFrontmatter } from '
 
 interface AgentEditorProps {
   agent: Agent;
-  apiKeys?: Record<string, string>; // API keys disabled — kept for interface compat
   workspaceDir?: string;
   onSave: (agent: Agent) => void;
   onDelete: (agentId: string) => void;

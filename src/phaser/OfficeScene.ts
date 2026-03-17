@@ -399,47 +399,11 @@ export class OfficeScene extends Phaser.Scene {
     for (let i = 0; i < 3; i++) {
       const lx = (i + 0.5) * lightSpacing * TILE;
       const ly = wallH + 20;
-      // Soft light cone
-      // lightG.fillStyle(P.lampGlow, 0.04);
-      // lightG.fillCircle(lx, ly + 40, 80);
-      // lightG.fillStyle(P.lampGlow, 0.03);
-      // lightG.fillCircle(lx, ly + 60, 120);
       // Light fixture
       lightG.fillStyle(P.ceilingLight, 0.6);
       lightG.fillRect(lx - 15, wallH, 30, 4);
       lightG.fillStyle(0xffffff, 0.4);
       lightG.fillRect(lx - 12, wallH + 1, 24, 2);
-    }
-
-    // ======= AMBIENT PARTICLES =======
-    // this.createDustParticles();
-  }
-
-  private createDustParticles() {
-    // Create floating dust motes for atmosphere
-    for (let i = 0; i < 20; i++) {
-      const W = this.scale.gameSize.width;
-      const H = this.scale.gameSize.height;
-      const px = Math.random() * W;
-      const py = Math.random() * H;
-      const size = 1 + Math.random() * 2;
-      const dust = this.add.circle(px, py, size, 0xfff8e1, 0.15 + Math.random() * 0.15);
-      dust.setDepth(2);
-
-      // Float upward slowly
-      this.tweens.add({
-        targets: dust,
-        x: px + (Math.random() - 0.5) * 60,
-        y: py - 30 - Math.random() * 40,
-        alpha: 0,
-        duration: 4000 + Math.random() * 4000,
-        delay: Math.random() * 6000,
-        repeat: -1,
-        onRepeat: () => {
-          dust.setPosition(Math.random() * W, Math.random() * H);
-          dust.setAlpha(0.15 + Math.random() * 0.15);
-        },
-      });
     }
   }
 

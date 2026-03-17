@@ -9,7 +9,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 
 let mainWindow = null;
 
@@ -153,6 +153,59 @@ function augmentedEnv(extra) {
   const currentPath = process.env.PATH || "";
   const newPath = [...extraPaths, currentPath].join(path.delimiter);
   return { ...process.env, PATH: newPath, ...(extra || {}) };
+}
+
+// ─── Resolve claude binary path ─────────────────────────────────
+// Find the full path to the `claude` CLI via the login shell so we
+// can spawn it directly (without a shell) and avoid all escaping
+// issues with complex system prompts and JSON arguments.
+let _claudeBinPath = null;
+let _claudeBinResolved = false;
+
+function resolveClaudeBin() {
+  if (_claudeBinResolved) return _claudeBinPath;
+  _claudeBinResolved = true;
+
+  if (process.platform === "win32") {
+    try {
+      _claudeBinPath =
+        execSync("where claude", { encoding: "utf8", timeout: 5000 })
+          .trim()
+          .split("\n")[0] || null;
+    } catch {}
+    return _claudeBinPath;
+  }
+
+  try {
+    _claudeBinPath =
+      execSync(`${SHELL_CMD} -l -c 'command -v claude'`, {
+        encoding: "utf8",
+        timeout: 10000,
+        env: augmentedEnv({ TERM: "dumb" }),
+      }).trim() || null;
+  } catch {}
+
+  if (!_claudeBinPath) {
+    const home = process.env.HOME || "";
+    for (const p of [
+      path.join(home, ".local", "bin", "claude"),
+      path.join(home, ".claude", "bin", "claude"),
+      "/usr/local/bin/claude",
+    ]) {
+      try {
+        fs.accessSync(p, fs.constants.X_OK);
+        _claudeBinPath = p;
+        break;
+      } catch {}
+    }
+  }
+
+  if (_claudeBinPath) {
+    console.log(`[resolveClaudeBin] Found claude at: ${_claudeBinPath}`);
+  } else {
+    console.warn("[resolveClaudeBin] Could not find 'claude' binary");
+  }
+  return _claudeBinPath;
 }
 
 // GitHub token injected by renderer after loading API keys
@@ -360,6 +413,11 @@ function setupShellIPC() {
 
       claudeProcs.set(reqId, proc);
 
+      let stderrBuf = "";
+      console.log(
+        `[claude-code:start] reqId=${reqId} cwd=${execCwd} cmd=${cmd}`,
+      );
+
       // Pipe prompt through stdin (no shell escaping needed)
       proc.stdin.write(prompt);
       proc.stdin.end();
@@ -375,17 +433,18 @@ function setupShellIPC() {
       });
 
       proc.stderr.on("data", (data) => {
+        const text = data.toString();
+        stderrBuf += text;
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(
-            "claude-code:stderr",
-            reqId,
-            data.toString(),
-          );
+          mainWindow.webContents.send("claude-code:stderr", reqId, text);
         }
       });
 
       proc.on("error", (err) => {
         claudeProcs.delete(reqId);
+        console.error(
+          `[claude-code:start] reqId=${reqId} error: ${err.message}`,
+        );
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(
             "claude-code:done",
@@ -398,12 +457,21 @@ function setupShellIPC() {
 
       proc.on("close", (code) => {
         claudeProcs.delete(reqId);
+        if (code !== 0) {
+          console.error(
+            `[claude-code:start] reqId=${reqId} exited with code ${code}`,
+          );
+          if (stderrBuf)
+            console.error(
+              `[claude-code:start] stderr: ${stderrBuf.slice(0, 2000)}`,
+            );
+        }
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(
             "claude-code:done",
             reqId,
             code ?? -1,
-            null,
+            code !== 0 && stderrBuf ? stderrBuf.slice(0, 2000) : null,
           );
         }
       });
@@ -460,7 +528,8 @@ function setupShellIPC() {
       args.push("--model", options.model);
     }
 
-    // System prompt
+    // System prompt — values passed directly in the args array.
+    // We spawn claude without a shell, so no escaping is needed.
     if (options.systemPrompt) {
       args.push("--system-prompt", options.systemPrompt);
     }
@@ -497,7 +566,7 @@ function setupShellIPC() {
       args.push("--continue");
     }
 
-    // Subagent definitions (JSON)
+    // Subagent definitions — passed directly as JSON string
     if (options.agents) {
       args.push("--agents", JSON.stringify(options.agents));
     }
@@ -515,15 +584,8 @@ function setupShellIPC() {
       args.push("--tools", options.tools);
     }
 
-    // Agent teams
-    if (options.enableAgentTeams) {
-      // Not a CLI flag — set via env var
-    }
-    if (options.teammateMode) {
-      args.push("--teammate-mode", options.teammateMode);
-    }
+    // Agent teams — enabled via env var CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
 
-    const isWin = process.platform === "win32";
     const envVars = augmentedEnv({
       TERM: "dumb",
       ...(githubToken
@@ -534,39 +596,48 @@ function setupShellIPC() {
         : {}),
     });
 
-    // Spawn claude directly with args array
-    const claudeCmd = "claude";
-    const fullArgs = args;
+    // Resolve the claude binary and spawn directly — no shell, no escaping.
+    // This avoids all issues with special characters in system prompts,
+    // multi-line markdown, nested JSON in --agents, etc.
+    const claudeBin = resolveClaudeBin();
+    if (!claudeBin) {
+      console.error(
+        "[claude-code:startAdvanced] Could not find 'claude' binary",
+      );
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(
+          "claude-code:done",
+          reqId,
+          -1,
+          "Could not find the 'claude' CLI. Is it installed?",
+        );
+      }
+      return reqId;
+    }
 
-    // We need to find the claude binary via the shell's PATH
-    const shellCmd = isWin
-      ? `claude ${fullArgs.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`
-      : `claude ${fullArgs
-          .map((a) => {
-            // Shell-escape each argument
-            if (/^[a-zA-Z0-9_\-.,/=:]+$/.test(a)) return a;
-            return `'${a.replace(/'/g, "'\\''")}'`;
-          })
-          .join(" ")}`;
+    const proc = spawn(claudeBin, args, {
+      cwd: execCwd,
+      env: envVars,
+      timeout: options.timeoutMs || 600000,
+    });
 
-    const proc = isWin
-      ? spawn("cmd.exe", ["/c", shellCmd], {
-          cwd: execCwd,
-          env: envVars,
-          timeout: options.timeoutMs || 600000,
-        })
-      : spawn(SHELL_CMD, ["-l", "-c", shellCmd], {
-          cwd: execCwd,
-          env: envVars,
-          timeout: options.timeoutMs || 600000,
-        });
+    console.log(
+      `[claude-code:startAdvanced] reqId=${reqId} cwd=${execCwd} bin=${claudeBin}`,
+    );
+    console.log(
+      `[claude-code:startAdvanced] args=${JSON.stringify(args.map((a) => (a.length > 100 ? a.slice(0, 100) + "..." : a)))}`,
+    );
 
     claudeProcs.set(reqId, proc);
 
-    // Pipe prompt through stdin — then close it so Claude gets EOF and
-    // starts processing. Permission responses use accept/deny rules in
-    // settings.json rather than interactive stdin, since -p mode reads
-    // until EOF for the prompt.
+    let stderrBuf = "";
+
+    // Pipe prompt through stdin, then close it with EOF so Claude starts
+    // processing. In -p mode, stdin must be closed to signal end-of-input;
+    // there is no way to send follow-up data (e.g. permission responses)
+    // after this point because the stream is already ended. Permission
+    // handling therefore relies on the --permission-mode flag and the
+    // project's .claude/settings.json rules, not on interactive stdin.
     if (options.prompt) {
       proc.stdin.write(options.prompt);
       proc.stdin.write("\n");
@@ -584,12 +655,10 @@ function setupShellIPC() {
     });
 
     proc.stderr.on("data", (data) => {
+      const text = data.toString();
+      stderrBuf += text;
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(
-          "claude-code:stderr",
-          reqId,
-          data.toString(),
-        );
+        mainWindow.webContents.send("claude-code:stderr", reqId, text);
       }
     });
 
@@ -602,12 +671,21 @@ function setupShellIPC() {
 
     proc.on("close", (code) => {
       claudeProcs.delete(reqId);
+      if (code !== 0) {
+        console.error(
+          `[claude-code:startAdvanced] reqId=${reqId} exited with code ${code}`,
+        );
+        if (stderrBuf)
+          console.error(
+            `[claude-code:startAdvanced] stderr: ${stderrBuf.slice(0, 2000)}`,
+          );
+      }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(
           "claude-code:done",
           reqId,
           code ?? -1,
-          null,
+          code !== 0 && stderrBuf ? stderrBuf.slice(0, 2000) : null,
         );
       }
     });
@@ -615,7 +693,13 @@ function setupShellIPC() {
     return reqId;
   });
 
-  // Send input to a running advanced Claude Code session (e.g. permission responses)
+  // Send input to a running advanced Claude Code session.
+  // NOTE: In -p mode stdin is closed immediately after the initial prompt
+  // (required for Claude to start processing). As a result, proc.stdin.writable
+  // will be false by the time this handler is called and writes will silently
+  // fail. Interactive permission responses are therefore not supported in -p
+  // mode; permission handling must be configured upfront via --permission-mode
+  // or the project's .claude/settings.json rules.
   ipcMain.handle("claude-code:sendInput", (_event, reqId, text) => {
     const proc = claudeProcs.get(reqId);
     if (proc && !proc.killed && proc.stdin && proc.stdin.writable) {

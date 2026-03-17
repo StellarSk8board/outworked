@@ -1,14 +1,13 @@
 import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
-import { Agent, AgentSkill, /* ApiKeys, */ SubagentDef } from './lib/types';
-import { loadAgents, saveAgents, /* loadApiKeys, */ loadSkills, saveSkills, createAgent, createClaudeAgentFile, generateAgentWithAI, resetProject, syncClaudeSubagents, upgradeAgentsToClaudeCode, parseSubagentFrontmatter } from './lib/storage';
+import { Agent, AgentSkill, SubagentDef } from './lib/types';
+import { loadAgents, saveAgents, loadSkills, saveSkills, createAgent, createClaudeAgentFile, generateAgentWithAI, resetProject, syncClaudeSubagents, upgradeAgentsToClaudeCode, parseSubagentFrontmatter } from './lib/storage';
 import { getClaudeCodeAuthStatus, isElectron, onClaudeAgentsChanged, watchProjectAgents, readClaudeSettings } from './lib/terminal';
 import { getWorkspace, setWorkspace } from './lib/filesystem';
 import AgentList from './components/AgentList';
 import AgentEditor from './components/AgentEditor';
-import ChatWindow from './components/ChatWindow';
-// import KeysModal from './components/KeysModal';  // API keys disabled — Claude Code only
+import ChatWindow, { OrchestrationDoneEvent } from './components/ChatWindow';
 import TerminalPanel from './components/TerminalPanel';
-import OfficeInstructions, { InstructionRun } from './components/OfficeInstructions';
+import  { InstructionRun } from './components/OfficeInstructions';
 import AgentTasks from './components/AgentTasks';
 import SkillsPanel from './components/SkillsPanel';
 import MusicPlayer from './components/MusicPlayer';
@@ -24,13 +23,9 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [rightPanel, setRightPanel] = useState<RightPanel>('chat');
-  // API keys disabled — Claude Code only
-  // const [apiKeys, setApiKeys] = useState<ApiKeys>({ openai: '', anthropic: '', gemini: '', github: '' });
-  // const [showKeys, setShowKeys] = useState(false);
-  const apiKeys = { openai: '', anthropic: '', gemini: '', github: '' }; // stub for downstream compatibility
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [instructionRuns, setInstructionRuns] = useState<InstructionRun[]>([]);
-  const [instructionRouting, setInstructionRouting] = useState(false);
+  const [agentTeamsEnabled, setAgentTeamsEnabled] = useState(() => localStorage.getItem('outworked_agent_teams') === '1');
   const [claudeReady, setClaudeReady] = useState(false);
   const [workspaceDir, setWorkspaceDir] = useState<string | null>(null);
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false);
@@ -39,14 +34,11 @@ export default function App() {
   const [showPermsModal, setShowPermsModal] = useState(false);
   const [permsEmpty, setPermsEmpty] = useState(false);
   const [permsDismissed, setPermsDismissed] = useState(false);
+  const [orchToast, setOrchToast] = useState<OrchestrationDoneEvent | null>(null);
 
   useEffect(() => {
     async function init() {
       const initialAgents = loadAgents();
-      // API keys disabled — Claude Code only
-      // const keys = loadApiKeys();
-      // setApiKeys(keys);
-      // (window as Window & { electronAPI?: { setGithubToken?: (t: string) => void } }).electronAPI?.setGithubToken?.(keys.github);
       setSkills(loadSkills());
 
       // Load saved workspace dir
@@ -133,11 +125,6 @@ export default function App() {
     setSelectedAgentId(agent.id);
     setRightPanel('chat');
   }, []);
-
-  function handleSelectAgent(agent: Agent) {
-    setSelectedAgentId(agent.id);
-    setRightPanel('chat');
-  }
 
   function handleAddAgent() {
     if (claudeReady) {
@@ -229,6 +216,11 @@ export default function App() {
     saveSkills(updated);
   }, []);
 
+  const handleOrchestrationDone = useCallback((event: OrchestrationDoneEvent) => {
+    setOrchToast(event);
+    setTimeout(() => setOrchToast(null), 8000);
+  }, []);
+
   function handleNewProject() {
     if (!window.confirm('Start a new project? This will clear all chat history, tasks, and working context. Agents and skills will be kept.')) return;
     const cleared = resetProject(agents);
@@ -251,9 +243,6 @@ export default function App() {
     const synced = await syncClaudeSubagents(agents, dir);
     if (synced !== agents) setAgents(synced);
   }
-
-  const hasKeys = false; // API keys disabled — Claude Code only
-  // const hasKeys = apiKeys.openai || apiKeys.anthropic || apiKeys.gemini;
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -279,7 +268,7 @@ export default function App() {
           <AgentList
             agents={agents}
             selectedAgentId={selectedAgentId}
-            onSelect={handleSelectAgent}
+            onSelect={handleAgentClick}
             onAdd={handleAddAgent}
           />
           <SkillsPanel skills={skills} onUpdate={handleUpdateSkills} />
@@ -288,6 +277,16 @@ export default function App() {
           <MusicPlayer />
         </div>
         <div className="px-3 py-2 border-t border-gray-800 flex flex-col gap-1.5">
+          <button
+            onClick={() => {
+              const next = !agentTeamsEnabled;
+              setAgentTeamsEnabled(next);
+              localStorage.setItem('outworked_agent_teams', next ? '1' : '0');
+            }}
+            className={`w-full btn-pixel text-[10px] ${agentTeamsEnabled ? 'bg-indigo-700 hover:bg-indigo-600 text-indigo-50' : 'bg-slate-700 hover:bg-slate-600 text-slate-200'}`}
+          >
+            {agentTeamsEnabled ? '👥 Teams ON' : '👤 Teams OFF'}
+          </button>
           <button
             onClick={() => setShowPermsModal(true)}
             className={`w-full btn-pixel text-[10px] ${permsEmpty && !permsDismissed ? 'bg-amber-700 hover:bg-amber-600 text-amber-50 animate-pulse' : 'bg-slate-700 hover:bg-slate-600 text-slate-200'}`}
@@ -300,14 +299,6 @@ export default function App() {
           >
             New Project
           </button>
-          {/* API Keys button disabled — Claude Code only
-          <button
-            onClick={() => setShowKeys(true)}
-            className={`w-full btn-pixel text-[10px] ${hasKeys ? 'bg-emerald-800 hover:bg-emerald-700 text-emerald-50' : 'bg-amber-700 hover:bg-amber-600 text-amber-50'}`}
-          >
-            {hasKeys ? 'Keys Set' : 'Add API Keys'}
-          </button>
-          */}
         </div>
       </aside>
 
@@ -321,6 +312,41 @@ export default function App() {
                 onAgentClick={handleAgentClick}
               />
             </Suspense>
+            {/* Orchestration complete toast */}
+            {orchToast && (
+              <div
+                className={`absolute top-3 left-1/2 -translate-x-1/2 z-20 rounded-lg border shadow-xl px-4 py-3 max-w-sm backdrop-blur-sm transition-all ${
+                  orchToast.failed === 0
+                    ? 'bg-emerald-950/90 border-emerald-500/50'
+                    : 'bg-amber-950/90 border-amber-500/50'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl mt-0.5">{orchToast.failed === 0 ? '✅' : '⚠️'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-[12px] font-pixel ${orchToast.failed === 0 ? 'text-emerald-200' : 'text-amber-200'}`}>
+                      {orchToast.failed === 0
+                        ? `All ${orchToast.success} task${orchToast.success !== 1 ? 's' : ''} complete!`
+                        : `${orchToast.success}/${orchToast.success + orchToast.failed} tasks complete`}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 truncate">{orchToast.plan}</p>
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {orchToast.agents.map((name) => (
+                        <span key={name} className="text-[9px] font-pixel px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 border border-slate-700/50">
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setOrchToast(null)}
+                    className="text-slate-500 hover:text-white text-xs shrink-0"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="absolute bottom-0 left-0 right-0 px-3 py-2 bg-slate-950/90 backdrop-blur-sm border-t border-slate-700 flex flex-col gap-1">
               {/* Attention-needed agents (stuck / waiting) */}
               {agents.filter((a) => a.status === 'stuck' || a.status === 'waiting-input' || a.status === 'waiting-approval').length > 0 && (
@@ -397,12 +423,6 @@ export default function App() {
           >
             Term
           </button>
-          <button
-            onClick={() => setRightPanel('instructions')}
-            className={`flex-1 py-2 text-[10px] font-pixel leading-relaxed transition-colors ${rightPanel === 'instructions' ? 'text-white border-b-2 border-indigo-500 bg-gray-800' : 'text-gray-500 hover:text-gray-300'}`}
-          >
-            Assign
-          </button>
 
         </div>
         <div className="flex-1 overflow-hidden relative">
@@ -411,15 +431,15 @@ export default function App() {
               <ChatWindow
                 agent={selectedAgent}
                 agents={agents}
-                apiKeys={apiKeys}
                 skills={skills}
                 onUpdateAgent={updateAgent}
                 onAddAgent={handleAddDynamicAgent}
+                agentTeamsEnabled={agentTeamsEnabled}
+                onOrchestrationDone={handleOrchestrationDone}
               />
             ) : rightPanel === 'editor' && selectedAgent ? (
               <AgentEditor
                 agent={selectedAgent}
-                apiKeys={apiKeys}
                 workspaceDir={workspaceDir || undefined}
                 onSave={handleSaveAgent}
                 onDelete={handleDeleteAgent}
@@ -430,28 +450,7 @@ export default function App() {
                 agent={selectedAgent}
                 onUpdateAgent={updateAgent}
               />
-            ) : rightPanel === 'instructions' ? (
-              <OfficeInstructions
-                agents={agents}
-                apiKeys={apiKeys}
-                skills={skills}
-                onUpdateAgent={updateAgent}
-                onAddAgent={handleAddDynamicAgent}
-                runs={instructionRuns}
-                setRuns={setInstructionRuns}
-                routing={instructionRouting}
-                setRouting={setInstructionRouting}
-              />
-            ) : (
-              <ChatWindow
-                agent={selectedAgent}
-                agents={agents}
-                apiKeys={apiKeys}
-                skills={skills}
-                onUpdateAgent={updateAgent}
-                onAddAgent={handleAddDynamicAgent}
-              />
-            )
+            ) : null
           )}
           {/* Terminal is always mounted to preserve shell session; hidden when not active */}
           <div className={`absolute inset-0 ${rightPanel === 'terminal' ? '' : 'invisible pointer-events-none'}`}>
@@ -460,19 +459,6 @@ export default function App() {
         </div>
       </aside>
       </>
-
-      {/* API Keys modal disabled — Claude Code only
-      {showKeys && (
-        <KeysModal
-          keys={apiKeys}
-          onSave={(newKeys) => {
-            setApiKeys(newKeys);
-            (window as Window & { electronAPI?: { setGithubToken?: (t: string) => void } }).electronAPI?.setGithubToken?.(newKeys.github);
-          }}
-          onClose={() => setShowKeys(false)}
-        />
-      )}
-      */}
 
       {showWorkspacePicker && (
         <WorkspacePicker

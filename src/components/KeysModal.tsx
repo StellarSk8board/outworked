@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { ApiKeys } from '../lib/types';
-import { saveApiKeys } from '../lib/storage';
 
 interface KeysModalProps {
   keys: ApiKeys;
@@ -13,7 +12,10 @@ export default function KeysModal({ keys, onSave, onClose }: KeysModalProps) {
   const [show, setShow] = useState({ openai: false, anthropic: false, gemini: false, github: false });
 
   function handleSave() {
-    saveApiKeys(draft);
+    localStorage.setItem('outworked_key_openai', draft.openai);
+    localStorage.setItem('outworked_key_anthropic', draft.anthropic);
+    localStorage.setItem('outworked_key_gemini', draft.gemini);
+    localStorage.setItem('outworked_key_github', draft.github);
     onSave(draft);
     onClose();
   }
