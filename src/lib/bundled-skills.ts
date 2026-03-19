@@ -1,8 +1,6 @@
 // Bundled skills — imported as raw strings via Vite's ?raw suffix
 import appleNotesRaw from '../basic-skills/apple-notes/SKILL.md?raw';
 import appleRemindersRaw from '../basic-skills/apple-reminders/SKILL.md?raw';
-import codingAgentRaw from '../basic-skills/coding-agent/SKILL.md?raw';
-import geminiRaw from '../basic-skills/gemini/SKILL.md?raw';
 import githubRaw from '../basic-skills/github/SKILL.md?raw';
 import gogRaw from '../basic-skills/gog/SKILL.md?raw';
 import imsgRaw from '../basic-skills/imsg/SKILL.md?raw';
@@ -16,8 +14,6 @@ import { parseSkill } from './skill-parser';
 const BUNDLED_RAW: Record<string, string> = {
   'apple-notes': appleNotesRaw,
   'apple-reminders': appleRemindersRaw,
-  'coding-agent': codingAgentRaw,
-  gemini: geminiRaw,
   github: githubRaw,
   gog: gogRaw,
   imsg: imsgRaw,

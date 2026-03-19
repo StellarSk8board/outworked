@@ -47,8 +47,6 @@ Use the `gh` CLI to interact with GitHub repositories, issues, PRs, and CI.
 - Local git operations (commit, push, pull, branch) → use `git` directly
 - Non-GitHub repos (GitLab, Bitbucket, self-hosted) → different CLIs
 - Cloning repositories → use `git clone`
-- Reviewing actual code changes → use `coding-agent` skill
-- Complex multi-file diffs → use `coding-agent` or read files directly
 
 ## Setup
 
