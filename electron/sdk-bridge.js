@@ -1,6 +1,10 @@
 // SDK Bridge: wraps @anthropic-ai/claude-agent-sdk for use from Electron main process.
 // Replaces the previous approach of spawning `claude` CLI as a child process.
 
+const { execFileSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
+
 // The SDK is ESM-only, so we use dynamic import (cached after first call).
 let _queryFn = null;
 async function getQuery() {
@@ -9,6 +13,46 @@ async function getQuery() {
     _queryFn = sdk.query;
   }
   return _queryFn;
+}
+
+// Resolve the system-installed Claude Code CLI executable.
+// Inside a packaged Electron app the SDK's bundled cli.js lives inside
+// app.asar and cannot be spawned as a child process, so we must point
+// the SDK at the real CLI binary on disk.
+let _claudeExePath = null;
+function getClaudeExecutablePath() {
+  if (_claudeExePath) return _claudeExePath;
+
+  const home = process.env.HOME || "";
+  // Common install locations (same paths augmentedEnv adds to PATH)
+  const candidates = [
+    path.join(home, ".claude", "bin", "claude"),
+    path.join(home, ".local", "bin", "claude"),
+    "/usr/local/bin/claude",
+  ];
+
+  for (const p of candidates) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      _claudeExePath = p;
+      return _claudeExePath;
+    } catch {
+      // not found / not executable
+    }
+  }
+
+  // Fallback: ask the shell (works if claude is on the user's login PATH)
+  try {
+    _claudeExePath = execFileSync("which", ["claude"], {
+      encoding: "utf8",
+      timeout: 3000,
+    }).trim();
+    if (_claudeExePath) return _claudeExePath;
+  } catch {
+    // not on PATH
+  }
+
+  return undefined; // let the SDK try its default (will fail inside asar)
 }
 
 // Active sessions: reqId → { abortController, done: boolean }
@@ -41,6 +85,13 @@ async function startSession(reqId, options, callbacks) {
     // permissions, and MCP servers configured in settings.json are available.
     settingSources: ["user", "project", "local"],
   };
+
+  // Point the SDK at the system-installed Claude CLI so it doesn't try
+  // to spawn cli.js from inside the app.asar archive.
+  const claudePath = getClaudeExecutablePath();
+  if (claudePath) {
+    sdkOptions.pathToClaudeCodeExecutable = claudePath;
+  }
 
   if (options.systemPrompt) sdkOptions.systemPrompt = options.systemPrompt;
   if (options.appendSystemPrompt) {
