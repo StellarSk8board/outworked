@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ApiKeys } from "../lib/types";
+import { setSetting } from "../lib/settings";
 
 interface KeysModalProps {
   keys: ApiKeys;
@@ -17,10 +18,10 @@ export default function KeysModal({ keys, onSave, onClose }: KeysModalProps) {
   });
 
   function handleSave() {
-    localStorage.setItem("outworked_key_openai", draft.openai);
-    localStorage.setItem("outworked_key_anthropic", draft.anthropic);
-    localStorage.setItem("outworked_key_gemini", draft.gemini);
-    localStorage.setItem("outworked_key_github", draft.github);
+    setSetting("outworked_key_openai", draft.openai);
+    setSetting("outworked_key_anthropic", draft.anthropic);
+    setSetting("outworked_key_gemini", draft.gemini);
+    setSetting("outworked_key_github", draft.github);
     onSave(draft);
     onClose();
   }

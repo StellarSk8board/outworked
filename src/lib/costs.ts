@@ -1,7 +1,7 @@
 // ─── Cost & Token Tracking ───────────────────────────────────────
 //
-// Persists cost records to localStorage. Each record captures a single
-// Claude Code interaction (one sendMessage or ClaudeCodePanel round-trip).
+// Persists cost records to SQLite via Electron IPC. Each record captures a
+// single Claude Code interaction (one sendMessage or ClaudeCodePanel round-trip).
 
 export interface CostRecord {
   id: string;
@@ -36,25 +36,34 @@ export interface DailyCostSummary extends CostSummary {
   date: string; // YYYY-MM-DD
 }
 
-// ─── Storage keys ────────────────────────────────────────────────
+// ─── IPC bridge ─────────────────────────────────────────────────
 
-const LS_RECORDS = "outworked_cost_records";
-const LS_BUDGETS = "outworked_cost_budgets";
+function getCostAPI() {
+  const w = window as unknown as { electronAPI?: { db?: Record<string, unknown> } };
+  const db = w.electronAPI?.db;
+  if (!db) return null;
+  return db as {
+    costAddRecord: (record: CostRecord) => Promise<void>;
+    costGetAll: () => Promise<CostRecord[]>;
+    costGetByAgent: (agentId: string) => Promise<CostRecord[]>;
+    costGetSince: (sinceMs: number) => Promise<CostRecord[]>;
+    costClear: () => Promise<void>;
+    costGetCumulative: (sessionKey: string) => Promise<{ cost: number; input_tokens: number; output_tokens: number } | null>;
+    costSetCumulative: (sessionKey: string, cost: number, inputTokens: number, outputTokens: number) => Promise<void>;
+    costDeleteCumulative: (sessionKey: string) => Promise<void>;
+    costGetBudgets: () => Promise<AgentBudget[]>;
+    costSetBudget: (agentId: string, dailyLimitUsd?: number, totalLimitUsd?: number) => Promise<void>;
+    costRecordDelta: (
+      sessionKey: string,
+      record: { id: string; agentId: string; agentName: string; sessionId?: string; timestamp: number },
+      cumulativeCost: number,
+      cumulativeInputTokens: number,
+      cumulativeOutputTokens: number,
+    ) => Promise<CostRecord | null>;
+  };
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────
-
-function loadRecords(): CostRecord[] {
-  try {
-    const raw = localStorage.getItem(LS_RECORDS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecords(records: CostRecord[]) {
-  localStorage.setItem(LS_RECORDS, JSON.stringify(records));
-}
 
 function toDateString(ts: number): string {
   const d = new Date(ts);
@@ -62,89 +71,58 @@ function toDateString(ts: number): string {
 }
 
 // ─── Cumulative → Delta tracking ─────────────────────────────────
-// Claude Code's total_cost_usd is cumulative per session. We track the
-// last known cumulative value per session so we can record only deltas.
-
-const LS_CUMULATIVE = "outworked_cost_cumulative";
-
-interface CumulativeState {
-  cost: number;
-  inputTokens: number;
-  outputTokens: number;
-}
-
-function loadCumulative(): Record<string, CumulativeState> {
-  try {
-    const raw = localStorage.getItem(LS_CUMULATIVE);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveCumulative(state: Record<string, CumulativeState>) {
-  localStorage.setItem(LS_CUMULATIVE, JSON.stringify(state));
-}
 
 /**
  * Record a cost from Claude Code's cumulative total_cost_usd.
  * Automatically computes the delta from the last known value for this session.
- * Pass sessionKey to disambiguate sessions (e.g. claude session ID or agent ID).
  */
-export function addCumulativeCost(
+export async function addCumulativeCost(
   agentId: string,
   agentName: string,
   cumulativeCost: number,
   cumulativeInputTokens: number,
   cumulativeOutputTokens: number,
   sessionKey: string,
-): CostRecord | null {
-  const cum = loadCumulative();
-  const prev = cum[sessionKey] || { cost: 0, inputTokens: 0, outputTokens: 0 };
+): Promise<CostRecord | null> {
+  const api = getCostAPI();
+  if (!api) return null;
 
-  const deltaCost = Math.max(0, cumulativeCost - prev.cost);
-  const deltaInput = Math.max(0, cumulativeInputTokens - prev.inputTokens);
-  const deltaOutput = Math.max(0, cumulativeOutputTokens - prev.outputTokens);
-
-  // Update cumulative state
-  cum[sessionKey] = {
-    cost: cumulativeCost,
-    inputTokens: cumulativeInputTokens,
-    outputTokens: cumulativeOutputTokens,
-  };
-  saveCumulative(cum);
-
-  if (deltaCost <= 0 && deltaInput <= 0 && deltaOutput <= 0) return null;
-
-  return addCostRecord(
+  // Single atomic IPC call: computes delta, updates cumulative state, and
+  // inserts the cost record inside one SQLite transaction.
+  const record = {
+    id: String(nextId++),
     agentId,
     agentName,
-    deltaCost,
-    deltaInput,
-    deltaOutput,
+    sessionId: sessionKey,
+    timestamp: Date.now(),
+  };
+  return api.costRecordDelta(
     sessionKey,
+    record,
+    cumulativeCost,
+    cumulativeInputTokens,
+    cumulativeOutputTokens,
   );
 }
 
 /** Reset cumulative tracking for a session (call when session is cleared). */
-export function resetCumulativeSession(sessionKey: string) {
-  const cum = loadCumulative();
-  delete cum[sessionKey];
-  saveCumulative(cum);
+export async function resetCumulativeSession(sessionKey: string): Promise<void> {
+  const api = getCostAPI();
+  if (api) await api.costDeleteCumulative(sessionKey);
 }
 
 // ─── Public API ──────────────────────────────────────────────────
 
 let nextId = Date.now();
 
-export function addCostRecord(
+export async function addCostRecord(
   agentId: string,
   agentName: string,
   costUsd: number,
   inputTokens: number,
   outputTokens: number,
   sessionId?: string,
-): CostRecord {
+): Promise<CostRecord> {
   const record: CostRecord = {
     id: String(nextId++),
     agentId,
@@ -155,24 +133,26 @@ export function addCostRecord(
     inputTokens,
     outputTokens,
   };
-  const records = loadRecords();
-  records.push(record);
-  // Keep max 5000 records to avoid localStorage bloat
-  if (records.length > 5000) records.splice(0, records.length - 5000);
-  saveRecords(records);
+  const api = getCostAPI();
+  if (api) {
+    await api.costAddRecord(record);
+  }
   return record;
 }
 
-export function getAllRecords(): CostRecord[] {
-  return loadRecords();
+export async function getAllRecords(): Promise<CostRecord[]> {
+  const api = getCostAPI();
+  return api ? api.costGetAll() : [];
 }
 
-export function getRecordsByAgent(agentId: string): CostRecord[] {
-  return loadRecords().filter((r) => r.agentId === agentId);
+export async function getRecordsByAgent(agentId: string): Promise<CostRecord[]> {
+  const api = getCostAPI();
+  return api ? api.costGetByAgent(agentId) : [];
 }
 
-export function getRecordsSince(sinceMs: number): CostRecord[] {
-  return loadRecords().filter((r) => r.timestamp >= sinceMs);
+export async function getRecordsSince(sinceMs: number): Promise<CostRecord[]> {
+  const api = getCostAPI();
+  return api ? api.costGetSince(sinceMs) : [];
 }
 
 // ─── Aggregations ────────────────────────────────────────────────
@@ -194,18 +174,18 @@ function summarize(records: CostRecord[]): CostSummary {
   };
 }
 
-export function getTotalSummary(): CostSummary {
-  return summarize(loadRecords());
+export async function getTotalSummary(): Promise<CostSummary> {
+  return summarize(await getAllRecords());
 }
 
-export function getTodaySummary(): CostSummary {
+export async function getTodaySummary(): Promise<CostSummary> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
-  return summarize(getRecordsSince(startOfDay.getTime()));
+  return summarize(await getRecordsSince(startOfDay.getTime()));
 }
 
-export function getPerAgentSummary(): AgentCostSummary[] {
-  const records = loadRecords();
+export async function getPerAgentSummary(): Promise<AgentCostSummary[]> {
+  const records = await getAllRecords();
   const byAgent = new Map<string, CostRecord[]>();
   for (const r of records) {
     const arr = byAgent.get(r.agentId) || [];
@@ -221,9 +201,9 @@ export function getPerAgentSummary(): AgentCostSummary[] {
   return result;
 }
 
-export function getDailySummaries(days = 7): DailyCostSummary[] {
+export async function getDailySummaries(days = 7): Promise<DailyCostSummary[]> {
   const cutoff = Date.now() - days * 86400000;
-  const records = loadRecords().filter((r) => r.timestamp >= cutoff);
+  const records = (await getAllRecords()).filter((r) => r.timestamp >= cutoff);
   const byDay = new Map<string, CostRecord[]>();
   for (const r of records) {
     const d = toDateString(r.timestamp);
@@ -232,7 +212,6 @@ export function getDailySummaries(days = 7): DailyCostSummary[] {
     byDay.set(d, arr);
   }
 
-  // Fill in missing days
   const result: DailyCostSummary[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(Date.now() - i * 86400000);
@@ -245,29 +224,18 @@ export function getDailySummaries(days = 7): DailyCostSummary[] {
 
 // ─── Budgets ─────────────────────────────────────────────────────
 
-export function loadBudgets(): AgentBudget[] {
-  try {
-    const raw = localStorage.getItem(LS_BUDGETS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+export async function loadBudgets(): Promise<AgentBudget[]> {
+  const api = getCostAPI();
+  return api ? api.costGetBudgets() : [];
 }
 
-export function saveBudgets(budgets: AgentBudget[]) {
-  localStorage.setItem(LS_BUDGETS, JSON.stringify(budgets));
-}
-
-export function setBudget(
+export async function setBudget(
   agentId: string,
   dailyLimitUsd?: number,
   totalLimitUsd?: number,
-) {
-  const budgets = loadBudgets().filter((b) => b.agentId !== agentId);
-  if (dailyLimitUsd !== undefined || totalLimitUsd !== undefined) {
-    budgets.push({ agentId, dailyLimitUsd, totalLimitUsd });
-  }
-  saveBudgets(budgets);
+): Promise<void> {
+  const api = getCostAPI();
+  if (api) await api.costSetBudget(agentId, dailyLimitUsd, totalLimitUsd);
 }
 
 export interface BudgetStatus {
@@ -280,10 +248,10 @@ export interface BudgetStatus {
   totalExceeded: boolean;
 }
 
-export function checkBudget(agentId: string): BudgetStatus {
-  const budgets = loadBudgets();
+export async function checkBudget(agentId: string): Promise<BudgetStatus> {
+  const budgets = await loadBudgets();
   const budget = budgets.find((b) => b.agentId === agentId);
-  const allRecords = getRecordsByAgent(agentId);
+  const allRecords = await getRecordsByAgent(agentId);
 
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -309,6 +277,7 @@ export function checkBudget(agentId: string): BudgetStatus {
   };
 }
 
-export function clearAllRecords() {
-  saveRecords([]);
+export async function clearAllRecords(): Promise<void> {
+  const api = getCostAPI();
+  if (api) await api.costClear();
 }

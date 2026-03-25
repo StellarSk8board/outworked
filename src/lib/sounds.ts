@@ -71,20 +71,41 @@ export function playNotificationPop() {
   playTone(1200, 0.06, "square", 0.08);
 }
 
-/** Check if sounds are enabled (user preference) */
+import { getSetting, setSetting } from "./settings";
+
+// ─── In-memory cache for sync reads ────────────────────────────
+// Sound/notification checks happen in synchronous event handlers,
+// so we cache the values and refresh them async.
+
+let _soundsEnabled = true;
+let _desktopNotifsEnabled = true;
+
+/** Load cached values from SQLite (call once at startup). */
+export async function initSoundSettings(): Promise<void> {
+  const [s, n] = await Promise.all([
+    getSetting("outworked_sounds"),
+    getSetting("outworked_desktop_notifs"),
+  ]);
+  _soundsEnabled = s !== "0";
+  _desktopNotifsEnabled = n !== "0";
+}
+
+/** Check if sounds are enabled (user preference) — sync, uses cache */
 export function getSoundsEnabled(): boolean {
-  return localStorage.getItem("outworked_sounds") !== "0";
+  return _soundsEnabled;
 }
 
 export function setSoundsEnabled(enabled: boolean) {
-  localStorage.setItem("outworked_sounds", enabled ? "1" : "0");
+  _soundsEnabled = enabled;
+  setSetting("outworked_sounds", enabled ? "1" : "0");
 }
 
-/** Check if desktop notifications are enabled */
+/** Check if desktop notifications are enabled — sync, uses cache */
 export function getDesktopNotificationsEnabled(): boolean {
-  return localStorage.getItem("outworked_desktop_notifs") !== "0";
+  return _desktopNotifsEnabled;
 }
 
 export function setDesktopNotificationsEnabled(enabled: boolean) {
-  localStorage.setItem("outworked_desktop_notifs", enabled ? "1" : "0");
+  _desktopNotifsEnabled = enabled;
+  setSetting("outworked_desktop_notifs", enabled ? "1" : "0");
 }

@@ -7,6 +7,7 @@ import {
   SubagentDef,
 } from "./types";
 import { sendMessage, sendMessageWithCost } from "./ai";
+import { getSetting } from "./settings";
 import {
   listFiles,
   listAllFiles,
@@ -283,6 +284,21 @@ export async function routeTasks(
     if (result.inputTokens) routerInputTokens = result.inputTokens;
     if (result.outputTokens) routerOutputTokens = result.outputTokens;
     lastRawReply = reply;
+
+    // If the reply has no JSON structure at all, treat it as a direct answer
+    // immediately instead of retrying.
+    if (!reply.includes("{")) {
+      return {
+        assignments: [],
+        plan: "Answered directly",
+        newAgents: [],
+        workingDirectory: "",
+        directAnswer: reply,
+        cost: routerCost,
+        inputTokens: routerInputTokens,
+        outputTokens: routerOutputTokens,
+      };
+    }
 
     try {
       const parsed = extractJson(reply);
@@ -889,8 +905,7 @@ ${
     // tools through the canUseTool callback which prompts the user via the UI.
     // When disabled, 'acceptEdits' auto-approves most operations.
     permissionMode:
-      typeof localStorage !== "undefined" &&
-      localStorage.getItem("outworked_permission_prompts") !== "0"
+      (await getSetting("outworked_permission_prompts")) !== "0"
         ? "default"
         : "acceptEdits",
     continueSession: !!sessionId,

@@ -58,12 +58,19 @@ import NotificationCenter, {
 import OnboardingModal from "./components/OnboardingModal";
 import { AppNotification, showDesktopNotification } from "./lib/notifications";
 import {
+  getSetting,
+  setSetting,
+  getSettingJSON,
+  setSettingJSON,
+} from "./lib/settings";
+import {
   playTaskComplete,
   playApprovalNeeded,
   playAgentStuck,
   playOrchestrationComplete,
   playOrchestrationWarning,
   getSoundsEnabled,
+  initSoundSettings,
 } from "./lib/sounds";
 import { sendClaudeCodeInput, PermissionRequest } from "./lib/terminal";
 
@@ -133,14 +140,12 @@ export default function App() {
   const [rightPanel, setRightPanel] = useState<RightPanel>("chat");
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [instructionRuns, setInstructionRuns] = useState<InstructionRun[]>([]);
-  const [agentTeamsEnabled, setAgentTeamsEnabled] = useState(
-    () => localStorage.getItem("outworked_agent_teams") === "1",
-  );
-  const [permissionPromptsEnabled, setPermissionPromptsEnabled] = useState(
-    () => localStorage.getItem("outworked_permission_prompts") !== "0",
-  );
+  const [agentTeamsEnabled, setAgentTeamsEnabled] = useState(false);
+  const [permissionPromptsEnabled, setPermissionPromptsEnabled] =
+    useState(true);
   const [claudeReady, setClaudeReady] = useState(false);
   const [workspaceDir, setWorkspaceDir] = useState<string | null>(null);
+  const workspaceDirRef = useRef<string | null>(null);
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false);
   const [startupDone, setStartupDone] = useState(false);
   const [hirePrompt, setHirePrompt] = useState<{
@@ -150,35 +155,47 @@ export default function App() {
   const [showCostsModal, setShowCostsModal] = useState(false);
   const [permsEmpty, setPermsEmpty] = useState(false);
   const [permsDismissed, setPermsDismissed] = useState(false);
-  const [debugMode, setDebugMode] = useState(
-    () => localStorage.getItem("outworked_debug") === "1",
-  );
+  const [debugMode, setDebugMode] = useState(false);
   const [orchToast, setOrchToast] = useState<OrchestrationDoneEvent | null>(
     null,
   );
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [latestToast, setLatestToast] = useState<AppNotification | null>(null);
-  const [showOnboarding, setShowOnboarding] = useState(
-    () => !localStorage.getItem("outworked_onboarding_done"),
-  );
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
-  const [furnitureLayout] = useState<
+  const [furnitureLayout, setFurnitureLayout] = useState<
     import("./phaser/OfficeScene").FurnitureItem[] | null
-  >(() => {
-    try {
-      const raw = localStorage.getItem("outworked_furniture_layout");
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  });
+  >(null);
 
   useEffect(() => {
     async function init() {
-      setSkills(loadSkills());
+      // Load persisted settings from SQLite
+      const [
+        savedWs,
+        savedTeams,
+        savedPerms,
+        savedDebug,
+        savedOnboarding,
+        savedFurniture,
+      ] = await Promise.all([
+        getSetting("outworked_workspace_dir"),
+        getSetting("outworked_agent_teams"),
+        getSetting("outworked_permission_prompts"),
+        getSetting("outworked_debug"),
+        getSetting("outworked_onboarding_done"),
+        getSettingJSON<import("./phaser/OfficeScene").FurnitureItem[] | null>(
+          "outworked_furniture_layout",
+          null,
+        ),
+      ]);
+      setAgentTeamsEnabled(savedTeams === "1");
+      setPermissionPromptsEnabled(savedPerms !== "0");
+      setDebugMode(savedDebug === "1");
+      setShowOnboarding(!savedOnboarding);
+      setFurnitureLayout(savedFurniture);
+      await initSoundSettings();
 
-      // Load saved workspace dir
-      const savedWs = localStorage.getItem("outworked_workspace_dir");
+      setSkills(await loadSkills());
 
       // Check Claude Code availability
       let ccReady = false;
@@ -205,22 +222,24 @@ export default function App() {
       if (isElectron()) {
         if (savedWs) {
           setWorkspaceDir(savedWs);
+          workspaceDirRef.current = savedWs;
           await setWorkspace(savedWs);
           watchProjectAgents(savedWs);
         } else {
           const defaultDir = await getWorkspace();
           setWorkspaceDir(defaultDir);
+          workspaceDirRef.current = defaultDir;
           watchProjectAgents(defaultDir);
           setShowWorkspacePicker(true);
         }
       }
 
       // Migrate any existing in-memory history to sessions (one-time)
-      const migrated = localStorage.getItem("outworked_sessions_migrated");
+      const migrated = await getSetting("outworked_sessions_migrated");
       if (!migrated) {
-        const rawAgents = (() => {
+        const rawAgents = await (async () => {
           try {
-            const r = localStorage.getItem("outworked_agents");
+            const r = await getSetting("outworked_agents");
             return r ? JSON.parse(r) : [];
           } catch {
             return [];
@@ -248,7 +267,7 @@ export default function App() {
             }
           }
         }
-        localStorage.setItem("outworked_sessions_migrated", "1");
+        await setSetting("outworked_sessions_migrated", "1");
       }
 
       setStartupDone(true);
@@ -270,12 +289,10 @@ export default function App() {
 
   // Auto-reload when Claude Code agent files change on disk
   useEffect(() => {
-    const unsub = onClaudeAgentsChanged(() => {
-      const wsDir =
-        localStorage.getItem("outworked_workspace_dir") || undefined;
-      loadAgentsFromDisk(wsDir).then((fresh) => {
-        setAgents((prev) => mergeRuntimeState(prev, fresh));
-      });
+    const unsub = onClaudeAgentsChanged(async () => {
+      const wsDir = (await getSetting("outworked_workspace_dir")) || undefined;
+      const fresh = await loadAgentsFromDisk(wsDir);
+      setAgents((prev) => mergeRuntimeState(prev, fresh));
     });
     return unsub;
   }, []);
@@ -315,9 +332,7 @@ export default function App() {
           Object.keys(updated) as (keyof Agent)[]
         ).some((k) => !EPHEMERAL_KEYS.has(k) && updated[k] !== old[k]);
         if (hasPersistentChange) {
-          const wsDir =
-            localStorage.getItem("outworked_workspace_dir") || undefined;
-          saveAgentToDisk(updated, wsDir);
+          saveAgentToDisk(updated, workspaceDirRef.current || undefined);
         }
       }
       return next;
@@ -401,14 +416,7 @@ export default function App() {
 
   const handleFurnitureMove = useCallback(
     (items: import("./phaser/OfficeScene").FurnitureItem[]) => {
-      try {
-        localStorage.setItem(
-          "outworked_furniture_layout",
-          JSON.stringify(items),
-        );
-      } catch {
-        /* ignore quota errors */
-      }
+      setSettingJSON("outworked_furniture_layout", items);
     },
     [],
   );
@@ -420,7 +428,7 @@ export default function App() {
         setHirePrompt({ resolve });
       }).then((description) => {
         setHirePrompt(null);
-        finishHire(description);
+        if (description !== null) finishHire(description);
       });
     } else {
       finishHire(null);
@@ -540,9 +548,7 @@ export default function App() {
       const saved = { ...agent, autoCreated: false };
       const next = prev.map((a) => (a.id === agentId ? saved : a));
       // Rewrite the .md file without the outworked-auto-created flag
-      const wsDir =
-        localStorage.getItem("outworked_workspace_dir") || undefined;
-      saveAgentToDisk(saved, wsDir);
+      saveAgentToDisk(saved, workspaceDirRef.current || undefined);
       return next;
     });
   }, []);
@@ -555,7 +561,7 @@ export default function App() {
   const toggleDebug = useCallback(() => {
     setDebugMode((prev) => {
       const next = !prev;
-      localStorage.setItem("outworked_debug", next ? "1" : "0");
+      setSetting("outworked_debug", next ? "1" : "0");
       return next;
     });
   }, []);
@@ -698,7 +704,8 @@ export default function App() {
 
   async function handleWorkspaceSelected(dir: string) {
     setWorkspaceDir(dir);
-    localStorage.setItem("outworked_workspace_dir", dir);
+    workspaceDirRef.current = dir;
+    setSetting("outworked_workspace_dir", dir);
     await setWorkspace(dir);
     watchProjectAgents(dir);
     setShowWorkspacePicker(false);
@@ -775,7 +782,7 @@ export default function App() {
             onClick={() => {
               const next = !agentTeamsEnabled;
               setAgentTeamsEnabled(next);
-              localStorage.setItem("outworked_agent_teams", next ? "1" : "0");
+              setSetting("outworked_agent_teams", next ? "1" : "0");
             }}
             className={`w-full btn-pixel text-[10px] ${agentTeamsEnabled ? "bg-indigo-700 hover:bg-indigo-600 text-indigo-50" : "bg-slate-700 hover:bg-slate-600 text-slate-200"}`}
           >
@@ -785,10 +792,7 @@ export default function App() {
             onClick={() => {
               const next = !permissionPromptsEnabled;
               setPermissionPromptsEnabled(next);
-              localStorage.setItem(
-                "outworked_permission_prompts",
-                next ? "1" : "0",
-              );
+              setSetting("outworked_permission_prompts", next ? "1" : "0");
             }}
             className={`w-full btn-pixel text-[10px] ${!permissionPromptsEnabled ? "bg-amber-700 hover:bg-amber-600 text-amber-50" : "bg-slate-700 hover:bg-slate-600 text-slate-200"}`}
           >
@@ -837,6 +841,8 @@ export default function App() {
             >
               🐛 Debug {debugMode ? "ON" : "OFF"}
             </button>
+          </div>
+          <div className="flex gap-1.5">
             <button
               onClick={handleNewProject}
               className="flex-1 btn-pixel text-[10px] bg-red-800 hover:bg-red-700 text-red-100"
@@ -1220,7 +1226,7 @@ export default function App() {
       {showOnboarding && startupDone && (
         <OnboardingModal
           onComplete={() => {
-            localStorage.setItem("outworked_onboarding_done", "1");
+            setSetting("outworked_onboarding_done", "1");
             setShowOnboarding(false);
           }}
           onOpenPerms={() => setShowPermsModal(true)}

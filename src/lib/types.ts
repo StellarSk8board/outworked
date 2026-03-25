@@ -161,6 +161,16 @@ export interface Agent {
   liveToolCalls?: { name: string; args: string; timestamp: number }[]; // tool calls in progress
   liveThinking?: string; // current thinking preview
 }
+// ─── Memory ─────────────────────────────────────────────────────
+
+export interface MemoryEntry {
+  id: string;
+  scope: string;
+  key: string;
+  value: string;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface AgentMessage {
   id: string;

@@ -1,6 +1,7 @@
 import { Agent, AgentSkill, ApiKeys, Message, ToolCall } from "./types";
 import { AGENT_TOOLS, ToolDefinition, executeTool } from "./tools";
 import { getWorkspace } from "./filesystem";
+import { getSetting } from "./settings";
 import {
   runClaudeCodeAdvanced,
   ClaudeCodeAdvancedOptions,
@@ -275,7 +276,7 @@ async function callClaudeCodeAdvanced(
     maxTurns: subDef?.maxTurns,
     permissionMode:
       (subDef?.permissionMode as ClaudeCodeAdvancedOptions["permissionMode"]) ||
-      (localStorage.getItem("outworked_permission_prompts") !== "0"
+      ((await getSetting("outworked_permission_prompts")) !== "0"
         ? "default"
         : "acceptEdits"),
     mcpServers: subDef?.mcpServers,

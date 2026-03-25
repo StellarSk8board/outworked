@@ -11,6 +11,17 @@ import {
 import { executeCode } from "./sandbox";
 import { execCommand } from "./terminal";
 
+// ─── Database IPC bridge ────────────────────────────────────────
+
+function getDbAPI(): {
+  memorySet: (scope: string, key: string, value: string) => Promise<unknown>;
+  memorySearch: (scope: string, query?: string) => Promise<unknown[]>;
+  memoryDelete: (scope: string, key: string) => Promise<boolean>;
+} | null {
+  const w = window as unknown as { electronAPI?: { db?: unknown } };
+  return (w.electronAPI?.db as ReturnType<typeof getDbAPI>) ?? null;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -219,6 +230,64 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: "remember",
+    description:
+      "Store a fact or note in persistent memory. Memories survive across sessions and can be recalled later. Use scopes: 'global' (shared across all agents), 'agent:<agentId>' (private to you), or 'project:<path>' (workspace-specific).",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: {
+          type: "string",
+          description:
+            'Memory scope: "global", "agent:<yourAgentId>", or "project:<workspacePath>"',
+        },
+        key: {
+          type: "string",
+          description:
+            "Short key to identify this memory (e.g. 'user-preference', 'api-endpoint')",
+        },
+        value: {
+          type: "string",
+          description: "The information to remember",
+        },
+      },
+      required: ["scope", "key", "value"],
+    },
+  },
+  {
+    name: "recall",
+    description:
+      "Retrieve memories from persistent storage. Search by scope and optional query string.",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: {
+          type: "string",
+          description:
+            'Memory scope to search: "global", "agent:<agentId>", or "project:<path>"',
+        },
+        query: {
+          type: "string",
+          description:
+            "Optional search query to filter memories by key or value",
+        },
+      },
+      required: ["scope"],
+    },
+  },
+  {
+    name: "forget",
+    description: "Delete a specific memory entry by scope and key.",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: { type: "string", description: "Memory scope" },
+        key: { type: "string", description: "Memory key to delete" },
+      },
+      required: ["scope", "key"],
+    },
+  },
+  {
     name: "git_create_pr",
     description:
       "Create a GitHub pull request for the current branch using the gh CLI. Requires gh to be authenticated.",
@@ -340,6 +409,33 @@ export async function executeTool(
       );
       if (!r.ok) return `Error creating PR: ${r.stderr || r.error}`;
       return r.stdout || "(PR created)";
+    }
+    case "remember": {
+      const db = getDbAPI();
+      if (!db) return "Error: database not available (not running in Electron)";
+      const result = await db.memorySet(args.scope, args.key, args.value);
+      return `Remembered: [${args.scope}] ${args.key} = ${args.value.slice(0, 100)}${args.value.length > 100 ? "…" : ""}`;
+    }
+    case "recall": {
+      const db = getDbAPI();
+      if (!db) return "Error: database not available (not running in Electron)";
+      const memories = await db.memorySearch(args.scope, args.query);
+      if (!memories || memories.length === 0)
+        return `No memories found in scope "${args.scope}"${args.query ? ` matching "${args.query}"` : ""}`;
+      return (memories as Record<string, unknown>[])
+        .map(
+          (m) =>
+            `[${m.key}] ${String(m.value).slice(0, 200)}`,
+        )
+        .join("\n");
+    }
+    case "forget": {
+      const db = getDbAPI();
+      if (!db) return "Error: database not available (not running in Electron)";
+      const deleted = await db.memoryDelete(args.scope, args.key);
+      return deleted
+        ? `Forgot: [${args.scope}] ${args.key}`
+        : `Memory not found: [${args.scope}] ${args.key}`;
     }
     default:
       return `Unknown tool: ${name}`;

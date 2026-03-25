@@ -14,6 +14,7 @@ import {
   runClaudeCodeAdvanced,
 } from "./terminal";
 import { v4 as uuidv4 } from "uuid";
+import { getSetting, setSetting, getSettingJSON, setSettingJSON } from "./settings";
 
 const SKILLS_KEY = "outworked_skills";
 
@@ -27,8 +28,8 @@ export function createAgent(
     name: makeAgentName(),
     role: "Assistant",
     personality: "You are a helpful AI assistant working in the office.",
-    model: claudeCodeDefault ? "claude-code" : "gpt-5.4",
-    provider: claudeCodeDefault ? "claude-code" : "openai",
+    model: "claude-code" ,
+    provider: "claude-code",
     skills: [],
     position: { x: 3, y: 3 },
     status: "idle",
@@ -43,20 +44,14 @@ export function createAgent(
 
 // ─── App-level skills ──────────────────────────────────────────
 
-export function loadSkills(): AgentSkill[] {
+export async function loadSkills(): Promise<AgentSkill[]> {
   if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(SKILLS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as AgentSkill[];
-  } catch {
-    return [];
-  }
+  return getSettingJSON<AgentSkill[]>(SKILLS_KEY, []);
 }
 
-export function saveSkills(skills: AgentSkill[]): void {
+export async function saveSkills(skills: AgentSkill[]): Promise<void> {
   if (typeof window === "undefined") return;
-  localStorage.setItem(SKILLS_KEY, JSON.stringify(skills));
+  await setSettingJSON(SKILLS_KEY, skills);
 }
 
 export function resetProject(agents: Agent[]): Agent[] {
@@ -69,8 +64,6 @@ export function resetProject(agents: Agent[]): Agent[] {
     currentSessionId: undefined,
     sessionId: undefined,
   }));
-  if (typeof window !== "undefined")
-    localStorage.removeItem("outworked_selected_agent");
   return cleared;
 }
 

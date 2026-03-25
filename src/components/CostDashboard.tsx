@@ -11,6 +11,7 @@ import {
   loadBudgets,
   clearAllRecords,
   type CostRecord,
+  type CostSummary,
   type AgentCostSummary,
   type DailyCostSummary,
   type BudgetStatus,
@@ -112,10 +113,10 @@ function BudgetRow({
   const [dailyVal, setDailyVal] = useState(status.dailyLimit?.toString() ?? "");
   const [totalVal, setTotalVal] = useState(status.totalLimit?.toString() ?? "");
 
-  function save() {
+  async function save() {
     const d = dailyVal.trim() ? parseFloat(dailyVal) : undefined;
     const t = totalVal.trim() ? parseFloat(totalVal) : undefined;
-    setBudget(
+    await setBudget(
       status.agentId,
       d && !isNaN(d) ? d : undefined,
       t && !isNaN(t) ? t : undefined,
@@ -198,20 +199,25 @@ export default function CostDashboard({ agents }: { agents: Agent[] }) {
   const [perAgent, setPerAgent] = useState<AgentCostSummary[]>([]);
   const [daily, setDaily] = useState<DailyCostSummary[]>([]);
   const [budgetStatuses, setBudgetStatuses] = useState<BudgetStatus[]>([]);
+  const [today, setToday] = useState<CostSummary>({ totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0, recordCount: 0 });
+  const [total, setTotal] = useState<CostSummary>({ totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0, recordCount: 0 });
   const [tab, setTab] = useState<"overview" | "agents" | "budgets">("overview");
 
-  const refresh = useCallback(() => {
-    const all = getAllRecords();
+  const refresh = useCallback(async () => {
+    const all = await getAllRecords();
     setRecords(all);
-    setPerAgent(getPerAgentSummary());
-    setDaily(getDailySummaries(7));
+    setPerAgent(await getPerAgentSummary());
+    setDaily(await getDailySummaries(7));
+    setToday(await getTodaySummary());
+    setTotal(await getTotalSummary());
     // Build budget statuses for agents that have records or budgets
-    const budgets = loadBudgets();
+    const budgets = await loadBudgets();
     const agentIds = new Set([
       ...all.map((r) => r.agentId),
       ...budgets.map((b) => b.agentId),
     ]);
-    setBudgetStatuses(Array.from(agentIds).map((id) => checkBudget(id)));
+    const statuses = await Promise.all(Array.from(agentIds).map((id) => checkBudget(id)));
+    setBudgetStatuses(statuses);
   }, []);
 
   useEffect(() => {
@@ -220,9 +226,6 @@ export default function CostDashboard({ agents }: { agents: Agent[] }) {
     const timer = setInterval(refresh, 10000);
     return () => clearInterval(timer);
   }, [refresh]);
-
-  const today = getTodaySummary();
-  const total = getTotalSummary();
   const maxDaily = Math.max(...daily.map((d) => d.totalCostUsd), 0.001);
 
   return (
@@ -450,8 +453,7 @@ export default function CostDashboard({ agents }: { agents: Agent[] }) {
                 "Clear all cost tracking data? This cannot be undone.",
               )
             ) {
-              clearAllRecords();
-              refresh();
+              clearAllRecords().then(() => refresh());
             }
           }}
           className="text-[9px] text-red-500/60 hover:text-red-400 font-pixel"

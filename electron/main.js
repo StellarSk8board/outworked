@@ -2089,6 +2089,78 @@ function setupSessionIPC() {
   });
 }
 
+// ─── Database IPC ────────────────────────────────────────────────
+const db = require("./db/database");
+
+function setupDatabaseIPC() {
+  // Wraps a db function so IPC errors are returned to the renderer
+  // instead of crashing the handler or leaving it hanging.
+  const safe =
+    (fn) =>
+    async (_event, ...args) => {
+      try {
+        return await fn(...args);
+      } catch (err) {
+        console.error(`[db-ipc] ${fn.name || "unknown"} failed:`, err);
+        throw err;
+      }
+    };
+
+  // App settings
+  ipcMain.handle("db:setting:get", safe(db.settingGet));
+  ipcMain.handle("db:setting:set", safe(db.settingSet));
+  ipcMain.handle("db:setting:delete", safe(db.settingDelete));
+  ipcMain.handle("db:setting:list", safe(db.settingList));
+
+  // Memory
+  ipcMain.handle("db:memory:set", safe(db.memorySet));
+  ipcMain.handle("db:memory:get", safe(db.memoryGet));
+  ipcMain.handle("db:memory:search", safe(db.memorySearch));
+  ipcMain.handle("db:memory:list", safe(db.memoryList));
+  ipcMain.handle("db:memory:delete", safe(db.memoryDelete));
+
+  // Cost records
+  ipcMain.handle("db:cost:addRecord", safe(db.costAddRecord));
+  ipcMain.handle("db:cost:getAll", safe(db.costGetAll));
+  ipcMain.handle("db:cost:getByAgent", safe(db.costGetByAgent));
+  ipcMain.handle("db:cost:getSince", safe(db.costGetSince));
+  ipcMain.handle("db:cost:clear", safe(db.costClear));
+  ipcMain.handle("db:cost:getCumulative", safe(db.costGetCumulative));
+  ipcMain.handle("db:cost:setCumulative", safe(db.costSetCumulative));
+  ipcMain.handle("db:cost:deleteCumulative", safe(db.costDeleteCumulative));
+  ipcMain.handle("db:cost:getBudgets", safe(db.costGetBudgets));
+  ipcMain.handle("db:cost:setBudget", safe(db.costSetBudget));
+  ipcMain.handle("db:cost:recordDelta", safe(db.costRecordDelta));
+
+  // Scheduler
+  ipcMain.handle("db:scheduler:create", safe(db.schedulerCreate));
+  ipcMain.handle("db:scheduler:list", safe(db.schedulerList));
+  ipcMain.handle("db:scheduler:get", safe(db.schedulerGet));
+  ipcMain.handle("db:scheduler:update", safe(db.schedulerUpdate));
+  ipcMain.handle("db:scheduler:delete", safe(db.schedulerDelete));
+  ipcMain.handle("db:scheduler:getHistory", safe(db.schedulerGetHistory));
+
+  // Triggers
+  ipcMain.handle("db:trigger:create", safe(db.triggerCreate));
+  ipcMain.handle("db:trigger:list", safe(db.triggerList));
+  ipcMain.handle("db:trigger:update", safe(db.triggerUpdate));
+  ipcMain.handle("db:trigger:delete", safe(db.triggerDelete));
+
+  // Channel configs
+  ipcMain.handle("db:channel:configSave", safe(db.channelConfigSave));
+  ipcMain.handle("db:channel:configList", safe(db.channelConfigList));
+  ipcMain.handle("db:channel:configDelete", safe(db.channelConfigDelete));
+
+  // Channel messages
+  ipcMain.handle("db:channel:messageSave", safe(db.channelMessageSave));
+  ipcMain.handle("db:channel:messageList", safe(db.channelMessageList));
+
+  // Skill auth
+  ipcMain.handle("db:skill:authGet", safe(db.skillAuthGet));
+  ipcMain.handle("db:skill:authSave", safe(db.skillAuthSave));
+  ipcMain.handle("db:skill:authDelete", safe(db.skillAuthDelete));
+}
+
 // ─── Auto-updater ───────────────────────────────────────────────
 function setupAutoUpdater() {
   autoUpdater.autoDownload = false;
@@ -2200,16 +2272,19 @@ function createWindow() {
   // When the renderer reloads (Cmd-R, navigation, HMR full reload), abort all
   // active SDK sessions. Without this, the renderer loses its IPC listeners
   // and in-flight sessions become orphaned — agents appear "working" forever.
-  mainWindow.webContents.on("did-start-navigation", (_event, _url, isInPlace) => {
-    if (sdkBridge.hasActiveSessions()) {
-      verbose &&
-        console.log(
-          "[main] renderer navigating — aborting orphaned SDK sessions",
-        );
-      sdkBridge.abortAll();
-      syncCaffeinate();
-    }
-  });
+  mainWindow.webContents.on(
+    "did-start-navigation",
+    (_event, _url, isInPlace) => {
+      if (sdkBridge.hasActiveSessions()) {
+        verbose &&
+          console.log(
+            "[main] renderer navigating — aborting orphaned SDK sessions",
+          );
+        sdkBridge.abortAll();
+        syncCaffeinate();
+      }
+    },
+  );
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -2291,6 +2366,7 @@ app.whenReady().then(() => {
   setupPermissionsIPC();
   setupMusicIPC();
   setupSessionIPC();
+  setupDatabaseIPC();
   setupNotificationIPC();
   setupAutoUpdater();
   createWindow();
@@ -2311,6 +2387,12 @@ app.on("window-all-closed", () => {
       /* ignore */
     }
     activeWatcher = null;
+  }
+  // Close SQLite database cleanly
+  try {
+    db.close();
+  } catch {
+    /* ignore */
   }
   app.quit();
 });

@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "electron:dev": "vite build && VERBOSE_LOGGING=true electron .",
     "electron:build": "vite build && electron-builder --config electron-builder.yml",
     "electron:publish": "vite build && electron-builder --config electron-builder.yml --publish always",
@@ -17,11 +18,13 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.81",
+    "better-sqlite3": "^12.8.0",
     "electron-updater": "^6.8.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

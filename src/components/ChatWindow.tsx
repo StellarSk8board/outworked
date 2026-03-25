@@ -29,6 +29,7 @@ import {
   searchSessions,
 } from "../lib/sessions";
 import { addExchange, clearExchanges, parseAskRequests } from "../lib/agentBus";
+import { getSetting } from "../lib/settings";
 import MarkdownMessage from "./MarkdownMessage";
 
 export interface OrchestrationDoneEvent {
@@ -754,7 +755,8 @@ export default function ChatWindow({
 
       // If the boss answered directly (simple question), return immediately
       if (result.directAnswer) {
-        if (debugMode) addDebug(`[boss] Answered directly — no delegation needed`);
+        if (debugMode)
+          addDebug(`[boss] Answered directly — no delegation needed`);
         onUpdateAgent({ ...bossAgent, status: "idle", currentThought: "" });
         setStreamingText("");
         return result.directAnswer;
@@ -767,8 +769,7 @@ export default function ChatWindow({
 
       // ── Step 2: Create new agents if needed ──
       const newAgents: Agent[] = [];
-      const wsDir =
-        localStorage.getItem("outworked_workspace_dir") || undefined;
+      const wsDir = (await getSetting("outworked_workspace_dir")) || undefined;
       for (const spec of result.newAgents) {
         if (
           employees.find(
@@ -818,8 +819,13 @@ export default function ChatWindow({
 
       if (assignments.length === 0) {
         // No tasks to delegate — answer the user directly instead of failing
-        if (debugMode) addDebug(`[boss] No assignments — falling back to direct answer`);
-        onUpdateAgent({ ...bossAgent, status: "thinking", currentThought: "Answering directly..." });
+        if (debugMode)
+          addDebug(`[boss] No assignments — falling back to direct answer`);
+        onUpdateAgent({
+          ...bossAgent,
+          status: "thinking",
+          currentThought: "Answering directly...",
+        });
         setStreamingText("");
         const directReply = await handleRegularChat(bossAgent, userText);
         return directReply;
@@ -2285,6 +2291,7 @@ export default function ChatWindow({
           ) : (
             <div className="flex flex-col gap-1">
               <button
+                id="chat-send-btn"
                 onClick={handleSend}
                 disabled={!input.trim()}
                 className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-pixel rounded transition-colors"

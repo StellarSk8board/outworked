@@ -123,6 +123,69 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.send("claude-code:watchProjectAgents", projectDir),
   },
 
+  // Database / persistence
+  db: {
+    // App settings
+    settingGet: (key) => ipcRenderer.invoke("db:setting:get", key),
+    settingSet: (key, value) =>
+      ipcRenderer.invoke("db:setting:set", key, value),
+    settingDelete: (key) => ipcRenderer.invoke("db:setting:delete", key),
+    settingList: () => ipcRenderer.invoke("db:setting:list"),
+
+    // Memory
+    memorySet: (scope, key, value) =>
+      ipcRenderer.invoke("db:memory:set", scope, key, value),
+    memoryGet: (scope, key) => ipcRenderer.invoke("db:memory:get", scope, key),
+    memorySearch: (scope, query) =>
+      ipcRenderer.invoke("db:memory:search", scope, query),
+    memoryList: (scope) => ipcRenderer.invoke("db:memory:list", scope),
+    memoryDelete: (scope, key) =>
+      ipcRenderer.invoke("db:memory:delete", scope, key),
+
+    // Cost records
+    costAddRecord: (record) => ipcRenderer.invoke("db:cost:addRecord", record),
+    costGetAll: () => ipcRenderer.invoke("db:cost:getAll"),
+    costGetByAgent: (agentId) =>
+      ipcRenderer.invoke("db:cost:getByAgent", agentId),
+    costGetSince: (sinceMs) => ipcRenderer.invoke("db:cost:getSince", sinceMs),
+    costClear: () => ipcRenderer.invoke("db:cost:clear"),
+    costGetCumulative: (sessionKey) =>
+      ipcRenderer.invoke("db:cost:getCumulative", sessionKey),
+    costSetCumulative: (sessionKey, cost, inputTokens, outputTokens) =>
+      ipcRenderer.invoke(
+        "db:cost:setCumulative",
+        sessionKey,
+        cost,
+        inputTokens,
+        outputTokens,
+      ),
+    costDeleteCumulative: (sessionKey) =>
+      ipcRenderer.invoke("db:cost:deleteCumulative", sessionKey),
+    costGetBudgets: () => ipcRenderer.invoke("db:cost:getBudgets"),
+    costSetBudget: (agentId, dailyLimitUsd, totalLimitUsd) =>
+      ipcRenderer.invoke(
+        "db:cost:setBudget",
+        agentId,
+        dailyLimitUsd,
+        totalLimitUsd,
+      ),
+    costRecordDelta: (
+      sessionKey,
+      record,
+      cumulativeCost,
+      cumulativeInputTokens,
+      cumulativeOutputTokens,
+    ) =>
+      ipcRenderer.invoke(
+        "db:cost:recordDelta",
+        sessionKey,
+        record,
+        cumulativeCost,
+        cumulativeInputTokens,
+        cumulativeOutputTokens,
+      ),
+  },
+
   // Session persistence
   sessions: {
     save: (session) => ipcRenderer.invoke("session:save", session),
