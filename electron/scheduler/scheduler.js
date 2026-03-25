@@ -4,7 +4,7 @@
 
 "use strict";
 
-const db = require("../../../electron/db/database");
+const db = require("../../electron/db/database.js");
 
 // ─── Cron helpers ────────────────────────────────────────────────────────────
 

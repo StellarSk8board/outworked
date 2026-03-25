@@ -3,7 +3,7 @@ import { AGENT_TOOLS, ToolDefinition, executeTool } from "./tools";
 import { getWorkspace } from "./filesystem";
 import { getSetting } from "./settings";
 import {
-  runClaudeCodeAdvanced,
+  runClaudeCode,
   ClaudeCodeAdvancedOptions,
   ClaudeCodeStreamCallbacks,
   PermissionRequest,
@@ -141,6 +141,7 @@ export async function sendMessageWithCost(
       options?.onClaudeCodeEvent,
       options?.onPermissionRequest,
       options?.onStderr,
+      useTools,
     );
   } else {
     throw new Error(
@@ -148,56 +149,12 @@ export async function sendMessageWithCost(
     );
   }
 
-  /* === API-key-based providers (commented out) ===
-  if (agent.provider === 'openai') {
-    return callOpenAI(agent.model, systemPrompt, messages, keys.openai, onThought, signal, useTools, options?.onToolCall, options?.extraTools, options?.customToolExecutor);
-  } else if (agent.provider === 'google') {
-    return callGemini(agent.model, systemPrompt, messages, keys.gemini, onThought, signal, useTools, options?.onToolCall, options?.extraTools, options?.customToolExecutor);
-  } else {
-    return callAnthropic(agent.model, systemPrompt, messages, keys.anthropic, onThought, signal, useTools, options?.onToolCall, options?.extraTools, options?.customToolExecutor);
-  }
-  */
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────
-
-function toolLabel(name: string, args: Record<string, unknown>): string {
-  const p = (args.path as string) ?? "";
-  switch (name) {
-    case "write_file":
-      return `📁 Writing ${p}…`;
-    case "read_file":
-      return `📖 Reading ${p}…`;
-    case "execute_code":
-      return "▶️ Running code…";
-    case "list_files":
-      return "📂 Listing files…";
-    case "delete_file":
-      return `🗑️ Deleting ${p}…`;
-    case "run_command":
-      return `💻 $ ${(args.command as string) ?? ""}…`;
-    case "update_todos":
-      return `📋 Updating task list…`;
-    case "assign_task":
-      return `📋 Assigning task to ${(args.employeeName as string) ?? "employee"}…`;
-    case "git_status":
-      return `🌿 Git status…`;
-    case "git_create_branch":
-      return `🌿 Creating branch ${(args.branch as string) ?? ""}…`;
-    case "git_commit":
-      return `💾 Committing: ${(args.message as string) ?? ""}…`;
-    case "git_push":
-      return `🚀 Pushing to origin…`;
-    case "git_create_pr":
-      return `🔀 Creating PR: ${(args.title as string) ?? ""}…`;
-    default:
-      return `🔧 ${name}…`;
-  }
-}
 
 // ─── Claude Code CLI ──────────────────────────────────────────────
 // Uses the locally-installed `claude` CLI.
-// Uses runClaudeCodeAdvanced with stream-json for full event visibility
+// Uses runClaudeCode with stream-json for full event visibility
 // (tool calls, subagent activity, session metadata, cost tracking).
 
 async function callClaudeCode(
@@ -209,6 +166,7 @@ async function callClaudeCode(
   onClaudeCodeEvent?: SendOptions["onClaudeCodeEvent"],
   onPermissionRequest?: SendOptions["onPermissionRequest"],
   onStderr?: SendOptions["onStderr"],
+  useTools = true,
 ): Promise<SendMessageResult> {
   // When resuming a session, only send the latest user message — Claude Code
   // already has the conversation history from the session.  Sending the full
@@ -243,6 +201,7 @@ async function callClaudeCode(
     onClaudeCodeEvent,
     onPermissionRequest,
     onStderr,
+    useTools,
   );
 }
 
@@ -260,9 +219,36 @@ async function callClaudeCodeAdvanced(
   onClaudeCodeEvent?: SendOptions["onClaudeCodeEvent"],
   onPermissionRequest?: SendOptions["onPermissionRequest"],
   onStderr?: SendOptions["onStderr"],
+  useTools = true,
 ): Promise<SendMessageResult> {
   const subDef = agent?.subagentDef;
   const isResume = !!agent?.sessionId;
+
+  // Build MCP servers list — include user-configured ones plus the always-running
+  // outworked-skills server. Skip MCP when tools are disabled (e.g. router calls).
+  let mcpServers = subDef?.mcpServers
+    ? subDef.mcpServers.filter(
+        (s) => !(typeof s === "object" && s !== null && "outworked-skills" in s),
+      )
+    : [];
+  if (useTools) {
+    mcpServers.push({
+      "outworked-skills": {
+        type: "http" as const,
+        url: "http://127.0.0.1:7823/mcp",
+      },
+    });
+  }
+
+  // If the agent has an allowlist, ensure our MCP server tools are permitted.
+  // Claude Code prefixes MCP tools with "mcp__<serverName>__<toolName>".
+  let allowedTools = subDef?.tools ? [...subDef.tools] : undefined;
+  if (allowedTools) {
+    const mcpToolPattern = "mcp__outworked-skills__*";
+    if (!allowedTools.includes(mcpToolPattern)) {
+      allowedTools.push(mcpToolPattern);
+    }
+  }
 
   const options: ClaudeCodeAdvancedOptions = {
     prompt,
@@ -271,15 +257,17 @@ async function callClaudeCodeAdvanced(
     // from the initial session. Re-sending it wastes input tokens.
     ...(isResume ? {} : { systemPrompt: system }),
     model: subDef?.model || undefined,
-    allowedTools: subDef?.tools,
-    disallowedTools: subDef?.disallowedTools,
-    maxTurns: subDef?.maxTurns,
+    // When useTools is false (e.g. router/planning calls), block all tools
+    // and force maxTurns: 1 so Claude Code returns text immediately.
+    allowedTools: useTools ? allowedTools : [],
+    disallowedTools: useTools ? subDef?.disallowedTools : undefined,
+    maxTurns: useTools ? subDef?.maxTurns : 1,
     permissionMode:
       (subDef?.permissionMode as ClaudeCodeAdvancedOptions["permissionMode"]) ||
       ((await getSetting("outworked_permission_prompts")) !== "0"
         ? "default"
         : "acceptEdits"),
-    mcpServers: subDef?.mcpServers,
+    mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
     continueSession: isResume,
     resumeSessionId: agent?.sessionId,
   };
@@ -328,7 +316,7 @@ async function callClaudeCodeAdvanced(
     onPermissionRequest: onPermissionRequest,
   };
 
-  const result = await runClaudeCodeAdvanced(options, callbacks, signal);
+  const result = await runClaudeCode(options, callbacks, signal);
 
   // Store session ID on the agent for continuity
   if (agent && result.sessionId) {

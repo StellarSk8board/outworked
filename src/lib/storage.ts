@@ -11,7 +11,7 @@ import {
   writeClaudeAgentFile,
   getHomedir,
   AgentFileInfo,
-  runClaudeCodeAdvanced,
+  runClaudeCode,
 } from "./terminal";
 import { v4 as uuidv4 } from "uuid";
 import { getSetting, setSetting, getSettingJSON, setSettingJSON } from "./settings";
@@ -229,7 +229,7 @@ Rules:
   try {
     // Use maxTurns: 1 to prevent Claude from using tools and force text-only output
     let fullText = "";
-    const result = await runClaudeCodeAdvanced(
+    const result = await runClaudeCode(
       {
         prompt,
         systemPrompt,

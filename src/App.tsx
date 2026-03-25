@@ -355,6 +355,19 @@ export default function App() {
             : a,
         ),
       );
+
+      // Safety net: if agent is still in channel-message after 10s, reset to idle.
+      // This catches cases where the auto-send failed silently.
+      const agentId = targetAgent.id;
+      setTimeout(() => {
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === agentId && a.status === "channel-message"
+              ? { ...a, status: "idle" as AgentStatus, currentThought: "" }
+              : a,
+          ),
+        );
+      }, 10_000);
     });
     return unsub;
   }, [agents]);

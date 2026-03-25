@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import MarkdownMessage from "./MarkdownMessage";
 import {
-  runClaudeCodeAdvanced,
+  runClaudeCode,
   getClaudeCodeVersion,
   readClaudeAgentFiles,
   writeClaudeAgentFile,
@@ -1213,7 +1213,7 @@ export default function ClaudeCodePanel({ workspace }: { workspace: string }) {
       };
 
       try {
-        const result = await runClaudeCodeAdvanced(
+        const result = await runClaudeCode(
           options,
           callbacks,
           controller.signal,

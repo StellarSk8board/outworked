@@ -187,7 +187,11 @@ export default function ChatWindow({
   const debugBottomRef = useRef<HTMLDivElement>(null);
   const pendingNonceRef = useRef<string | null>(null);
 
-  // Auto-send programmatically injected messages (e.g. from triggers)
+  // Auto-send programmatically injected messages (e.g. from triggers).
+  // Uses a ref to pass the text directly to handleSend instead of relying
+  // on DOM button clicks which can silently fail.
+  const pendingAutoSendRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (
       pendingMessage &&
@@ -196,13 +200,20 @@ export default function ChatWindow({
       !isStreaming
     ) {
       pendingNonceRef.current = pendingMessage.nonce;
+      pendingAutoSendRef.current = pendingMessage.text;
       setInput(pendingMessage.text);
       onPendingMessageConsumed?.();
       // Defer to next tick so input state is set before handleSend reads it
       setTimeout(() => {
         const sendBtn = document.getElementById("chat-send-btn");
-        sendBtn?.click();
-      }, 50);
+        if (sendBtn) {
+          sendBtn.click();
+        } else {
+          // Fallback: reset agent status if we can't send
+          console.warn("[ChatWindow] Could not find send button for auto-send");
+          pendingAutoSendRef.current = null;
+        }
+      }, 100);
     }
   }, [pendingMessage, agent, isStreaming]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -416,6 +427,28 @@ export default function ChatWindow({
         reply = await handleRegularChat(updatedWithUser, userText);
       }
 
+      // If this was a channel message, give the boss a follow-up turn with
+      // tools so it can send the reply back via send_message.
+      const wasChannelMessage = updatedWithUser.status === "channel-message";
+      if (wasChannelMessage && isBoss) {
+        onUpdateAgent({
+          ...updatedWithUser,
+          status: "working",
+          currentThought: "📤 Sending reply...",
+        });
+        const sendPrompt =
+          `Here is the result of the tasks you orchestrated:\n\n${reply}\n\n` +
+          `Now send a concise summary of these results back to the person who messaged you. ` +
+          `Use the send_message tool with the channelId and conversationId from the original message above. ` +
+          `Keep the reply short and helpful.`;
+        try {
+          await handleRegularChat(updatedWithUser, sendPrompt);
+        } catch {
+          // Best-effort — don't fail the whole orchestration if send fails
+          console.warn("[boss] Failed to send channel reply");
+        }
+      }
+
       const assistantMsg: Message = {
         role: "assistant",
         content: reply,
@@ -552,7 +585,7 @@ export default function ChatWindow({
                   partial.slice(0, 80) + (partial.length > 80 ? "..." : ""),
               }),
             abortRef.current?.signal,
-            { useTools: false, skills },
+            { useTools: true, skills },
           );
 
           addExchange(
@@ -764,6 +797,7 @@ export default function ChatWindow({
         employees,
         EMPTY_KEYS,
         routerModel,
+        abortRef.current?.signal,
       );
 
       // Track boss planning cost
@@ -776,6 +810,13 @@ export default function ChatWindow({
           result.outputTokens || 0,
           bossAgent.id,
         );
+      }
+
+      // Check abort after planning
+      if (abortRef.current?.signal.aborted) {
+        onUpdateAgent({ ...bossAgent, status: "idle", currentThought: "" });
+        setStreamingText("");
+        return "Stopped.";
       }
 
       // If the boss answered directly (simple question), return immediately
@@ -854,6 +895,13 @@ export default function ChatWindow({
         setStreamingText("");
         const directReply = await handleRegularChat(bossAgent, userText);
         return directReply;
+      }
+
+      // Check abort before execution
+      if (abortRef.current?.signal.aborted) {
+        onUpdateAgent({ ...bossAgent, status: "idle", currentThought: "" });
+        setStreamingText("");
+        return "Stopped.";
       }
 
       // ── Step 4: Create todos on Boss ──
@@ -1478,7 +1526,7 @@ export default function ChatWindow({
           abortRef.current!.signal,
           {
             skills,
-            useTools: false,
+            useTools: true,
             colleagues: otherAgents.map((a) => ({
               name: a.name,
               role: a.role,
@@ -2309,7 +2357,7 @@ export default function ChatWindow({
           {isStreaming ? (
             <button
               onClick={handleStop}
-              className="px-2 py-1 bg-red-600 hover:bg-red-500 text-white text-[11px] font-pixel rounded transition-colors"
+              className="px-2 py-1 bg-red-600 hover:bg-red-500 text-white text-[11px] font-pixel rounded transition-colors cursor-pointer"
             >
               stop
             </button>
@@ -2319,7 +2367,7 @@ export default function ChatWindow({
                 id="chat-send-btn"
                 onClick={handleSend}
                 disabled={!input.trim()}
-                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-pixel rounded transition-colors"
+                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-pixel rounded transition-colors cursor-pointer"
               >
                 send
               </button>
@@ -2332,7 +2380,7 @@ export default function ChatWindow({
                       (t) => t.agentId === agent.id && t.status === "running",
                     )
                   }
-                  className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-30 text-slate-300 text-[9px] font-pixel rounded transition-colors"
+                  className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-30 text-slate-300 text-[9px] font-pixel rounded transition-colors cursor-pointer"
                   title="Run in background — continue working while this agent processes"
                 >
                   bg

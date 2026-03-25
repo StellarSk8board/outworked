@@ -145,8 +145,8 @@ async function startSession(reqId, options, callbacks) {
   if (options.dangerouslySkipPermissions)
     sdkOptions.allowDangerouslySkipPermissions = true;
 
-  // Tool permissions
-  if (options.allowedTools && options.allowedTools.length > 0) {
+  // Tool permissions — pass even if empty (empty = no tools allowed)
+  if (options.allowedTools != null) {
     sdkOptions.allowedTools = options.allowedTools;
   }
   if (options.disallowedTools && options.disallowedTools.length > 0) {

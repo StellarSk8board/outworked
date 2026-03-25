@@ -8,6 +8,7 @@ files:
   - dist-renderer/**/*
   - build/icon.png
   - build/icon.icns
+asarUnpack: []
 npmRebuild: false
 publish:
   provider: github

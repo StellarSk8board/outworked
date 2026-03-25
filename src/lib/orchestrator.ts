@@ -16,7 +16,7 @@ import {
   searchFiles,
 } from "./filesystem";
 import {
-  runClaudeCodeAdvanced,
+  runClaudeCode,
   ClaudeCodeAdvancedOptions,
   ClaudeCodeStreamCallbacks,
 } from "./terminal";
@@ -137,6 +137,7 @@ export async function routeTasks(
   agents: Agent[],
   keys: ApiKeys,
   routerModel: { model: Agent["model"]; provider: Agent["provider"] },
+  signal?: AbortSignal,
 ): Promise<OrchestrationResult> {
   const employeeList = agents
     .map((a) => `- ${a.name} (${a.role}): ${a.personality.slice(0, 120)}`)
@@ -276,8 +277,8 @@ export async function routeTasks(
         : `${prompt}\n\nIMPORTANT: Respond ONLY with a valid JSON object. No markdown, no explanation — just the raw JSON.`,
       keys,
       () => {},
-      undefined,
-      { useTools: false },
+      signal,
+      { useTools: true },
     );
     const reply = result.text;
     if (result.cost) routerCost = result.cost;
@@ -768,7 +769,7 @@ export async function generateTodoList(
     keys,
     () => {},
     undefined,
-    { useTools: false, skills },
+    { useTools: true, skills },
   );
 
   try {
@@ -1021,7 +1022,7 @@ ${
   };
 
   try {
-    const result = await runClaudeCodeAdvanced(
+    const result = await runClaudeCode(
       options,
       streamCallbacks,
       signal,
@@ -1048,7 +1049,7 @@ ${
         continueSession: false,
         resumeSessionId: undefined,
       };
-      const result = await runClaudeCodeAdvanced(
+      const result = await runClaudeCode(
         freshOptions,
         streamCallbacks,
         signal,

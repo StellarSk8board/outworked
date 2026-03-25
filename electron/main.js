@@ -2379,6 +2379,30 @@ app.whenReady().then(() => {
     console.error("[channels] Failed to initialize:", err.message);
   }
 
+  // ─── MCP Server (always-running, Streamable HTTP) ───────────────
+  const mcpServer = require("./mcp/mcp-server");
+  mcpServer.start();
+
+  // Clean up any stale outworked-skills entry from Claude Code's settings.json.
+  // MCP is now injected per-session via SDK options as an HTTP server.
+  try {
+    const home = process.env.HOME || "";
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    if (fs.existsSync(settingsPath)) {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+      if (settings.mcpServers && settings.mcpServers["outworked-skills"]) {
+        delete settings.mcpServers["outworked-skills"];
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), {
+          encoding: "utf-8",
+          mode: FILE_MODE,
+        });
+        console.log("[mcp] Removed stale outworked-skills from settings.json");
+      }
+    }
+  } catch (err) {
+    console.error("[mcp] Failed to clean settings:", err.message);
+  }
+
   try {
     const { scheduler } = require("./scheduler");
     scheduler.start(mainWindow);

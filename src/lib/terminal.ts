@@ -377,22 +377,6 @@ export async function execCommand(
   return api.exec(command, cwd, timeoutMs);
 }
 
-// ─── Claude Code execution (streaming via SDK) ────────────────────
-
-export async function runClaudeCode(
-  prompt: string,
-  systemPrompt: string,
-  cwd?: string,
-  onData?: (chunk: string) => void,
-  signal?: AbortSignal,
-): Promise<string> {
-  const result = await runClaudeCodeAdvanced(
-    { prompt, systemPrompt, cwd },
-    { onTextDelta: onData },
-    signal,
-  );
-  return result.result;
-}
 
 // ─── Advanced Claude Code execution ───────────────────────────────
 // Receives typed SDK messages via the claude-code:event IPC channel.
@@ -415,7 +399,7 @@ export interface ClaudeCodeStreamCallbacks {
   onPermissionRequest?: (request: PermissionRequest) => void;
 }
 
-export async function runClaudeCodeAdvanced(
+export async function runClaudeCode(
   options: ClaudeCodeAdvancedOptions,
   callbacks: ClaudeCodeStreamCallbacks,
   signal?: AbortSignal,
