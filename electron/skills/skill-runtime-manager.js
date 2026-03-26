@@ -9,20 +9,21 @@
 //   - Load persisted auth from DB on startup, save after auth
 //   - Forward runtime events to the renderer via IPC
 
-const fs = require('fs');
-const path = require('path');
-const db = require('../db/database');
-const BaseRuntime = require('./base-runtime');
+const fs = require("fs");
+const path = require("path");
+const db = require("../db/database");
+const BaseRuntime = require("./base-runtime");
+const verbose = process.env.VERBOSE_LOGGING === "true";
 
 // ── SkillError ──────────────────────────────────────────────────
 
 class SkillError extends Error {
   constructor(message, { runtime, tool, code, cause } = {}) {
     super(message);
-    this.name = 'SkillError';
+    this.name = "SkillError";
     this.runtime = runtime;
     this.tool = tool;
-    this.code = code || 'SKILL_ERROR';
+    this.code = code || "SKILL_ERROR";
     this.cause = cause;
   }
 }
@@ -33,10 +34,10 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 // Files in electron/skills/ that are NOT runtime directories
 const SKIP_ENTRIES = new Set([
-  'base-runtime.js',
-  'skill-runtime-manager.js',
-  'oauth-helper.js',
-  'index.js',
+  "base-runtime.js",
+  "skill-runtime-manager.js",
+  "oauth-helper.js",
+  "index.js",
 ]);
 
 // ── Registry ─────────────────────────────────────────────────────
@@ -65,7 +66,10 @@ async function discoverAndRegister() {
   try {
     entries = fs.readdirSync(skillsDir, { withFileTypes: true });
   } catch (err) {
-    console.error('[skill-runtime-manager] Failed to read skills directory:', err.message);
+    console.error(
+      "[skill-runtime-manager] Failed to read skills directory:",
+      err.message,
+    );
     return;
   }
 
@@ -73,24 +77,36 @@ async function discoverAndRegister() {
     if (!entry.isDirectory()) continue;
     if (SKIP_ENTRIES.has(entry.name)) continue;
 
-    const indexPath = path.join(skillsDir, entry.name, 'index.js');
+    const indexPath = path.join(skillsDir, entry.name, "index.js");
     if (!fs.existsSync(indexPath)) continue;
 
     try {
       const RuntimeClass = require(indexPath);
 
       // Verify it's a BaseRuntime subclass
-      if (!RuntimeClass || !RuntimeClass.prototype || !(RuntimeClass.prototype instanceof BaseRuntime)) {
-        console.warn(`[skill-runtime-manager] Skipping '${entry.name}': does not extend BaseRuntime`);
+      if (
+        !RuntimeClass ||
+        !RuntimeClass.prototype ||
+        !(RuntimeClass.prototype instanceof BaseRuntime)
+      ) {
+        console.warn(
+          `[skill-runtime-manager] Skipping '${entry.name}': does not extend BaseRuntime`,
+        );
         continue;
       }
 
       const runtime = new RuntimeClass();
       await runtime.init();
       registerRuntime(runtime);
-      console.log(`[skill-runtime-manager] Discovered and registered: ${runtime.name}`);
+      verbose &&
+        console.log(
+          `[skill-runtime-manager] Discovered and registered: ${runtime.name}`,
+        );
     } catch (err) {
-      console.error(`[skill-runtime-manager] Failed to load runtime '${entry.name}':`, err.message);
+      console.error(
+        `[skill-runtime-manager] Failed to load runtime '${entry.name}':`,
+        err.message,
+      );
     }
   }
 }
@@ -103,7 +119,9 @@ async function discoverAndRegister() {
  */
 function registerRuntime(runtime) {
   if (runtimes.has(runtime.name)) {
-    console.warn(`[skill-runtime-manager] Runtime '${runtime.name}' is already registered — replacing`);
+    console.warn(
+      `[skill-runtime-manager] Runtime '${runtime.name}' is already registered — replacing`,
+    );
     // Clean up old tool index entries
     for (const [toolName, rtName] of _toolIndex) {
       if (rtName === runtime.name) _toolIndex.delete(toolName);
@@ -123,7 +141,10 @@ function registerRuntime(runtime) {
 
   // Restore persisted auth, if any
   _restoreAuth(runtime).catch((err) => {
-    console.error(`[skill-runtime-manager] Failed to restore auth for '${runtime.name}':`, err.message);
+    console.error(
+      `[skill-runtime-manager] Failed to restore auth for '${runtime.name}':`,
+      err.message,
+    );
   });
 }
 
@@ -173,7 +194,10 @@ function use(mw) {
 use({
   async after(ctx, _result) {
     const duration = Date.now() - ctx.startedAt;
-    console.log(`[skill] ${ctx.runtimeName}:${ctx.toolName} completed in ${duration}ms`);
+    verbose &&
+      console.log(
+        `[skill] ${ctx.runtimeName}:${ctx.toolName} completed in ${duration}ms`,
+      );
   },
 });
 
@@ -197,7 +221,7 @@ async function authenticateRuntime(name, credentials) {
   }
 
   // OAuth2 runtimes — need app credentials (clientId/clientSecret)
-  if (!credentials && authConfig && authConfig.type === 'oauth2') {
+  if (!credentials && authConfig && authConfig.type === "oauth2") {
     const appCreds = loadOAuthAppCredentials(authConfig.provider || name);
 
     if (appCreds) {
@@ -205,7 +229,7 @@ async function authenticateRuntime(name, credentials) {
     } else {
       const entered = await promptForOAuthAppCredentials(name, authConfig);
       if (!entered) {
-        return { ok: false, error: 'Setup cancelled' };
+        return { ok: false, error: "Setup cancelled" };
       }
       saveOAuthAppCredentials(authConfig.provider || name, entered);
       credentials = entered;
@@ -219,16 +243,18 @@ async function authenticateRuntime(name, credentials) {
 
 // ── OAuth app credential storage ────────────────────────────────
 
-const os = require('os');
-const OAUTH_CREDS_DIR = path.join(os.homedir(), '.outworked');
-const OAUTH_CREDS_FILE = path.join(OAUTH_CREDS_DIR, 'oauth-apps.json');
+const os = require("os");
+const OAUTH_CREDS_DIR = path.join(os.homedir(), ".outworked");
+const OAUTH_CREDS_FILE = path.join(OAUTH_CREDS_DIR, "oauth-apps.json");
 
 function loadAllOAuthAppCredentials() {
   try {
     if (fs.existsSync(OAUTH_CREDS_FILE)) {
-      return JSON.parse(fs.readFileSync(OAUTH_CREDS_FILE, 'utf8'));
+      return JSON.parse(fs.readFileSync(OAUTH_CREDS_FILE, "utf8"));
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return {};
 }
 
@@ -239,13 +265,16 @@ function loadOAuthAppCredentials(provider) {
 
 function saveOAuthAppCredentials(provider, creds) {
   const all = loadAllOAuthAppCredentials();
-  all[provider] = { clientId: creds.clientId, clientSecret: creds.clientSecret };
+  all[provider] = {
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+  };
   fs.mkdirSync(OAUTH_CREDS_DIR, { recursive: true });
-  fs.writeFileSync(OAUTH_CREDS_FILE, JSON.stringify(all, null, 2), 'utf8');
+  fs.writeFileSync(OAUTH_CREDS_FILE, JSON.stringify(all, null, 2), "utf8");
 }
 
 function promptForOAuthAppCredentials(runtimeName, authConfig) {
-  const { BrowserWindow, shell } = require('electron');
+  const { BrowserWindow, shell } = require("electron");
   return new Promise((resolve) => {
     const win = new BrowserWindow({
       width: 520,
@@ -258,7 +287,7 @@ function promptForOAuthAppCredentials(runtimeName, authConfig) {
       webPreferences: { nodeIntegration: false, contextIsolation: true },
     });
 
-    const provider = authConfig.provider || 'the service';
+    const provider = authConfig.provider || "the service";
 
     const html = `<!DOCTYPE html>
 <html><head><style>
@@ -309,22 +338,24 @@ function promptForOAuthAppCredentials(runtimeName, authConfig) {
   </script>
 </body></html>`;
 
-    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
     win.setMenu(null);
 
-    win.webContents.on('page-title-updated', (_event, title) => {
-      if (title.startsWith('AUTH:')) {
+    win.webContents.on("page-title-updated", (_event, title) => {
+      if (title.startsWith("AUTH:")) {
         try {
           const creds = JSON.parse(title.slice(5));
           win.close();
           resolve(creds);
-        } catch { /* ignore */ }
-      } else if (title.startsWith('OPEN:')) {
+        } catch {
+          /* ignore */
+        }
+      } else if (title.startsWith("OPEN:")) {
         shell.openExternal(title.slice(5));
       }
     });
 
-    win.on('closed', () => resolve(null));
+    win.on("closed", () => resolve(null));
   });
 }
 
@@ -351,12 +382,15 @@ async function disconnectRuntime(name) {
 async function executeTool(runtimeName, toolName, params) {
   const runtime = _requireRuntime(runtimeName);
 
-  if (runtime.status !== 'connected') {
-    throw new SkillError(`Runtime '${runtimeName}' is not connected (status: ${runtime.status})`, {
-      runtime: runtimeName,
-      tool: toolName,
-      code: 'NOT_CONNECTED',
-    });
+  if (runtime.status !== "connected") {
+    throw new SkillError(
+      `Runtime '${runtimeName}' is not connected (status: ${runtime.status})`,
+      {
+        runtime: runtimeName,
+        tool: toolName,
+        code: "NOT_CONNECTED",
+      },
+    );
   }
 
   const context = { runtimeName, toolName, params, startedAt: Date.now() };
@@ -402,8 +436,11 @@ async function destroyAll() {
   for (const runtime of runtimes.values()) {
     promises.push(
       runtime.destroy().catch((err) => {
-        console.error(`[skill-runtime-manager] Error destroying '${runtime.name}':`, err.message);
-      })
+        console.error(
+          `[skill-runtime-manager] Error destroying '${runtime.name}':`,
+          err.message,
+        );
+      }),
     );
   }
   await Promise.all(promises);
@@ -421,35 +458,41 @@ async function destroyAll() {
 function setupSkillRuntimeIPC(ipcMain, mainWindow) {
   _mainWindow = mainWindow;
 
-  ipcMain.handle('skill-runtime:list', () => {
+  ipcMain.handle("skill-runtime:list", () => {
     return listRuntimes();
   });
 
-  ipcMain.handle('skill-runtime:status', (_event, name) => {
+  ipcMain.handle("skill-runtime:status", (_event, name) => {
     const rt = runtimes.get(name);
     if (!rt) return null;
     return { name: rt.name, status: rt.status };
   });
 
-  ipcMain.handle('skill-runtime:authenticate', async (_event, name, credentials) => {
-    try {
-      return await authenticateRuntime(name, credentials);
-    } catch (err) {
-      console.error(`[skill-runtime] authenticate ${name}:`, err.message);
-      return { ok: false, error: err.message };
-    }
-  });
+  ipcMain.handle(
+    "skill-runtime:authenticate",
+    async (_event, name, credentials) => {
+      try {
+        return await authenticateRuntime(name, credentials);
+      } catch (err) {
+        console.error(`[skill-runtime] authenticate ${name}:`, err.message);
+        return { ok: false, error: err.message };
+      }
+    },
+  );
 
-  ipcMain.handle('skill-runtime:disconnect', async (_event, name) => {
+  ipcMain.handle("skill-runtime:disconnect", async (_event, name) => {
     await disconnectRuntime(name);
     return { ok: true };
   });
 
-  ipcMain.handle('skill-runtime:executeTool', async (_event, runtimeName, toolName, params) => {
-    return executeTool(runtimeName, toolName, params);
-  });
+  ipcMain.handle(
+    "skill-runtime:executeTool",
+    async (_event, runtimeName, toolName, params) => {
+      return executeTool(runtimeName, toolName, params);
+    },
+  );
 
-  ipcMain.handle('skill-runtime:getTools', (_event, name) => {
+  ipcMain.handle("skill-runtime:getTools", (_event, name) => {
     return getToolsForRuntime(name);
   });
 }
@@ -461,7 +504,7 @@ function _requireRuntime(name) {
   if (!runtime) {
     throw new SkillError(`Unknown runtime: '${name}'`, {
       runtime: name,
-      code: 'TOOL_NOT_FOUND',
+      code: "TOOL_NOT_FOUND",
     });
   }
   return runtime;
@@ -473,12 +516,15 @@ async function _executeWithTimeout(runtime, toolName, params) {
   let timer;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new SkillError(`Tool '${toolName}' timed out after ${timeoutMs}ms`, {
-        runtime: runtime.name,
-        tool: toolName,
-        code: 'TIMEOUT',
-      })),
-      timeoutMs
+      () =>
+        reject(
+          new SkillError(`Tool '${toolName}' timed out after ${timeoutMs}ms`, {
+            runtime: runtime.name,
+            tool: toolName,
+            code: "TIMEOUT",
+          }),
+        ),
+      timeoutMs,
     );
   });
 
@@ -496,34 +542,47 @@ function _normalizeError(err, runtimeName, toolName) {
   if (err instanceof SkillError) return err;
 
   // Map known error types
-  const { ValidationError } = require('./base-runtime');
+  const { ValidationError } = require("./base-runtime");
   if (err instanceof ValidationError) {
-    return new SkillError(err.message, { runtime: runtimeName, tool: toolName, code: 'VALIDATION', cause: err });
+    return new SkillError(err.message, {
+      runtime: runtimeName,
+      tool: toolName,
+      code: "VALIDATION",
+      cause: err,
+    });
   }
 
-  if (err.message && err.message.includes('401')) {
-    return new SkillError(err.message, { runtime: runtimeName, tool: toolName, code: 'AUTH_EXPIRED', cause: err });
+  if (err.message && err.message.includes("401")) {
+    return new SkillError(err.message, {
+      runtime: runtimeName,
+      tool: toolName,
+      code: "AUTH_EXPIRED",
+      cause: err,
+    });
   }
 
-  return new SkillError(err.message || 'Unknown error', {
+  return new SkillError(err.message || "Unknown error", {
     runtime: runtimeName,
     tool: toolName,
-    code: 'EXECUTION_ERROR',
+    code: "EXECUTION_ERROR",
     cause: err,
   });
 }
 
 async function _persistAuth(runtime) {
-  const tokenCreds = typeof runtime.getCredentials === 'function'
-    ? runtime.getCredentials()
-    : null;
-  const oauthConfig = typeof runtime.getConfig === 'function'
-    ? runtime.getConfig()
-    : {};
-  const merged = tokenCreds
-    ? { ...oauthConfig, ...tokenCreds }
-    : null;
-  db.skillAuthSave(runtime.name, merged ? JSON.stringify(merged) : null, oauthConfig, runtime.status);
+  const tokenCreds =
+    typeof runtime.getCredentials === "function"
+      ? runtime.getCredentials()
+      : null;
+  const oauthConfig =
+    typeof runtime.getConfig === "function" ? runtime.getConfig() : {};
+  const merged = tokenCreds ? { ...oauthConfig, ...tokenCreds } : null;
+  db.skillAuthSave(
+    runtime.name,
+    merged ? JSON.stringify(merged) : null,
+    oauthConfig,
+    runtime.status,
+  );
 }
 
 async function _restoreAuth(runtime) {
@@ -534,31 +593,47 @@ async function _restoreAuth(runtime) {
   try {
     credentials = JSON.parse(row.credentials);
   } catch {
-    console.warn(`[skill-runtime-manager] Corrupted credentials for '${runtime.name}', skipping restore`);
+    console.warn(
+      `[skill-runtime-manager] Corrupted credentials for '${runtime.name}', skipping restore`,
+    );
     return;
   }
 
   try {
     await runtime.authenticate(credentials, { silent: true });
-    console.log(`[skill-runtime-manager] Restored auth for '${runtime.name}'`);
+    verbose &&
+      console.log(
+        `[skill-runtime-manager] Restored auth for '${runtime.name}'`,
+      );
   } catch (err) {
-    console.warn(`[skill-runtime-manager] Auth restore failed for '${runtime.name}': ${err.message}`);
+    console.warn(
+      `[skill-runtime-manager] Auth restore failed for '${runtime.name}': ${err.message}`,
+    );
     try {
-      const config = typeof runtime.getConfig === 'function' ? runtime.getConfig() : {};
-      db.skillAuthSave(runtime.name, row.credentials, config, 'error');
-    } catch { /* best effort */ }
+      const config =
+        typeof runtime.getConfig === "function" ? runtime.getConfig() : {};
+      db.skillAuthSave(runtime.name, row.credentials, config, "error");
+    } catch {
+      /* best effort */
+    }
   }
 }
 
 function _pushEventToRenderer(runtimeName, eventType, data) {
   // Forward to the trigger engine so skill events can fire triggers
   try {
-    const triggerEngine = require('../triggers/trigger-engine');
+    const triggerEngine = require("../triggers/trigger-engine");
     triggerEngine.evaluateSkillEvent({ type: eventType, data });
-  } catch { /* trigger engine may not be initialized yet */ }
+  } catch {
+    /* trigger engine may not be initialized yet */
+  }
 
   if (_mainWindow && !_mainWindow.isDestroyed()) {
-    _mainWindow.webContents.send('skill-runtime:event', { runtimeName, eventType, data });
+    _mainWindow.webContents.send("skill-runtime:event", {
+      runtimeName,
+      eventType,
+      data,
+    });
   }
 }
 

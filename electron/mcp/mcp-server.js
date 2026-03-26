@@ -13,6 +13,7 @@ const path = require("path");
 const os = require("os");
 const { spawn, execFileSync } = require("child_process");
 const db = require("../db/database");
+const verbose = process.env.VERBOSE_LOGGING === "true";
 
 // ─── Cloudflared tunnel management ──────────────────────────────
 // Active tunnels: key (port or url) → { proc, publicUrl }
@@ -117,7 +118,7 @@ async function ensureCloudflared() {
     );
   }
 
-  console.log(`[mcp] Downloading cloudflared from ${url}...`);
+  verbose && console.log(`[mcp] Downloading cloudflared from ${url}...`);
   fs.mkdirSync(CLOUDFLARED_DIR, { recursive: true });
 
   if (url.endsWith(".tgz")) {
@@ -140,7 +141,7 @@ async function ensureCloudflared() {
 
   // Make executable
   fs.chmodSync(CLOUDFLARED_BIN, 0o755);
-  console.log(`[mcp] cloudflared installed at ${CLOUDFLARED_BIN}`);
+  verbose && console.log(`[mcp] cloudflared installed at ${CLOUDFLARED_BIN}`);
   return CLOUDFLARED_BIN;
 }
 
@@ -279,7 +280,7 @@ const BUILTIN_TOOLS = [
 // ─── Skill tool discovery ───────────────────────────────────────
 
 function getSkillTools() {
-  console.log("[mcp] Discovering skill tools...");
+  verbose && console.log("[mcp] Discovering skill tools...");
   if (!_skillManager) return [];
   const tools = [];
   for (const runtime of _skillManager.listRuntimes()) {
@@ -300,7 +301,7 @@ function getSkillTools() {
 // ─── Tool execution ─────────────────────────────────────────────
 
 async function executeTool(name, args) {
-  console.log(`[mcp] Executing tool: ${name} with args:`, args);
+  verbose && console.log(`[mcp] Executing tool: ${name} with args:`, args);
   switch (name) {
     case "remember": {
       db.memorySet(args.scope, args.key, args.value);
@@ -368,12 +369,7 @@ async function executeTool(name, args) {
       }
 
       // Kill any other active tunnels before starting a new one
-      for (const [existingKey, t] of _tunnels) {
-        try {
-          t.proc.kill();
-        } catch (_) {}
-        _tunnels.delete(existingKey);
-      }
+      stopAllTunnels();
 
       // Ensure cloudflared is available (downloads on first use)
       let cloudflaredPath;
@@ -488,7 +484,8 @@ async function executeTool(name, args) {
 async function handleMcpRequest(msg, agentId = null) {
   const { id, method, params } = msg;
 
-  console.log(`[mcp] Received request: ${method} with params:`, params);
+  verbose &&
+    console.log(`[mcp] Received request: ${method} with params:`, params);
 
   switch (method) {
     case "initialize":
@@ -654,7 +651,8 @@ function start() {
   });
 
   _server.listen(PORT, "127.0.0.1", () => {
-    console.log(`[mcp] MCP server listening on http://127.0.0.1:${PORT}/mcp`);
+    verbose &&
+      console.log(`[mcp] MCP server listening on http://127.0.0.1:${PORT}/mcp`);
   });
 
   _server.on("error", (err) => {

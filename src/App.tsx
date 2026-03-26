@@ -143,6 +143,7 @@ export default function App() {
   const [agentTeamsEnabled, setAgentTeamsEnabled] = useState(false);
   const [permissionPromptsEnabled, setPermissionPromptsEnabled] =
     useState(true);
+  const [autoApproveAll, setAutoApproveAll] = useState(false);
   const [claudeReady, setClaudeReady] = useState(false);
   const [workspaceDir, setWorkspaceDir] = useState<string | null>(null);
   const workspaceDirRef = useRef<string | null>(null);
@@ -178,6 +179,7 @@ export default function App() {
         savedDebug,
         savedOnboarding,
         savedFurniture,
+        savedAutoApprove,
       ] = await Promise.all([
         getSetting("outworked_workspace_dir"),
         getSetting("outworked_agent_teams"),
@@ -188,9 +190,11 @@ export default function App() {
           "outworked_furniture_layout",
           null,
         ),
+        getSetting("outworked_auto_approve_all"),
       ]);
       setAgentTeamsEnabled(savedTeams === "1");
       setPermissionPromptsEnabled(savedPerms !== "0");
+      setAutoApproveAll(savedAutoApprove === "1");
       // setDebugMode(savedDebug === "1");
       setDebugMode(false); // Force debug mode off for now, to avoid accidentally enabling it in production
       setShowOnboarding(!savedOnboarding);
@@ -863,7 +867,7 @@ export default function App() {
             }}
             className={`w-full btn-pixel text-[10px] ${agentTeamsEnabled ? "bg-indigo-700 hover:bg-indigo-600 text-indigo-50" : "bg-slate-700 hover:bg-slate-600 text-slate-200"}`}
           >
-            {agentTeamsEnabled ? "👥 Teams ON" : "👤 Teams OFF"}
+            {agentTeamsEnabled ? "Teams ON" : "Teams OFF"}
           </button> */}
           <button
             onClick={() => {
@@ -874,6 +878,16 @@ export default function App() {
             className={`w-full btn-pixel text-[10px] ${!permissionPromptsEnabled ? "bg-amber-700 hover:bg-amber-600 text-amber-50" : "bg-slate-700 hover:bg-slate-600 text-slate-200"}`}
           >
             {permissionPromptsEnabled ? "🔒 Auto Edit OFF" : "🔓 Auto Edit ON"}
+          </button>
+          <button
+            onClick={() => {
+              const next = !autoApproveAll;
+              setAutoApproveAll(next);
+              setSetting("outworked_auto_approve_all", next ? "1" : "0");
+            }}
+            className={`w-full btn-pixel text-[10px] ${autoApproveAll ? "bg-amber-700 hover:bg-amber-600 text-amber-50" : "bg-slate-700 hover:bg-slate-600 text-slate-200"}`}
+          >
+            {autoApproveAll ? "⚡ Auto Approve ON" : "🔒 Auto Approve OFF"}
           </button>
           <NotificationCenter
             notifications={notifications}
@@ -1178,6 +1192,7 @@ export default function App() {
                 onUpdateAgent={updateAgent}
                 onAddAgent={handleAddDynamicAgent}
                 agentTeamsEnabled={agentTeamsEnabled}
+                autoApprovePermissions={autoApproveAll}
                 onOrchestrationDone={handleOrchestrationDone}
                 onPermissionNotification={handlePermissionNotification}
                 debugMode={debugMode}

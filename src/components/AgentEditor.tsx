@@ -394,6 +394,58 @@ export default function AgentEditor({
               />
             </Field>
 
+            <Field label="Thinking">
+              <select
+                value={def.thinking || "adaptive"}
+                onChange={(e) => {
+                  const val = e.target.value === "adaptive" ? undefined : e.target.value;
+                  updateDef({ thinking: val as SubagentDef["thinking"] });
+                  saveToFile({ ...def, thinking: val as SubagentDef["thinking"] });
+                }}
+                className="input-mono"
+              >
+                <option value="adaptive">adaptive (auto)</option>
+                <option value="enabled">enabled (fixed budget)</option>
+                <option value="disabled">disabled</option>
+              </select>
+            </Field>
+
+            {def.thinking === "enabled" && (
+              <Field label="Thinking Budget (tokens)">
+                <input
+                  type="number"
+                  value={def.thinkingBudget ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value ? parseInt(e.target.value) : undefined;
+                    updateDef({ thinkingBudget: val });
+                    saveToFile({ ...def, thinkingBudget: val });
+                  }}
+                  placeholder="default"
+                  className="input-mono"
+                  min={1024}
+                  step={1024}
+                />
+              </Field>
+            )}
+
+            <Field label="Effort">
+              <select
+                value={def.effort || "default"}
+                onChange={(e) => {
+                  const val = e.target.value === "default" ? undefined : e.target.value;
+                  updateDef({ effort: val as SubagentDef["effort"] });
+                  saveToFile({ ...def, effort: val as SubagentDef["effort"] });
+                }}
+                className="input-mono"
+              >
+                <option value="default">default (high)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="max">max</option>
+              </select>
+            </Field>
+
             <Field label="Permission Mode">
               <select
                 value={def.permissionMode || "default"}

@@ -102,6 +102,7 @@ async function startSession(reqId, options, callbacks) {
     abortController,
     done: false,
     heartbeatInterval,
+    query: null, // set after query() is called
   });
 
   // Handle timeout via AbortController
@@ -148,6 +149,10 @@ async function startSession(reqId, options, callbacks) {
     sdkOptions.permissionMode = options.permissionMode;
   if (options.dangerouslySkipPermissions)
     sdkOptions.allowDangerouslySkipPermissions = true;
+  if (options.effort) sdkOptions.effort = options.effort;
+  if (options.fallbackModel) sdkOptions.fallbackModel = options.fallbackModel;
+  if (options.outputFormat) sdkOptions.outputFormat = options.outputFormat;
+  if (options.thinking) sdkOptions.thinking = options.thinking;
 
   // Tool permissions — pass even if empty (empty = no tools allowed)
   if (options.allowedTools != null) {
@@ -157,19 +162,25 @@ async function startSession(reqId, options, callbacks) {
     sdkOptions.disallowedTools = options.disallowedTools;
   }
 
-  // Session management
+  // Session management — resume takes precedence over continue.
+  // When we have an explicit session ID, use resume (not continue).
+  // continue resumes the *most recent* session, which may not be ours.
   if (options.resumeSessionId) {
     sdkOptions.resume = options.resumeSessionId;
+    if (options.forkSession) sdkOptions.forkSession = true;
   } else if (options.continueSession) {
     sdkOptions.continue = true;
   }
+  if (options.sessionId) sdkOptions.sessionId = options.sessionId;
+  if (options.persistSession === false) sdkOptions.persistSession = false;
 
   // Subagent definitions
   if (options.agents) {
     sdkOptions.agents = options.agents;
   }
 
-  // MCP servers — SDK takes Record<string, McpServerConfig> directly
+  // MCP servers — SDK takes Record<string, McpServerConfig> directly.
+  // Pass through the full config object so env, headers, etc. are preserved.
   if (options.mcpServers && options.mcpServers.length > 0) {
     const mcpObj = {};
     for (const entry of options.mcpServers) {
@@ -177,11 +188,7 @@ async function startSession(reqId, options, callbacks) {
         mcpObj[entry] = {};
       } else {
         for (const [name, cfg] of Object.entries(entry)) {
-          mcpObj[name] = {};
-          if (cfg.type) mcpObj[name].type = cfg.type;
-          if (cfg.command) mcpObj[name].command = cfg.command;
-          if (cfg.args) mcpObj[name].args = cfg.args;
-          if (cfg.url) mcpObj[name].url = cfg.url;
+          mcpObj[name] = { ...cfg };
         }
       }
     }
@@ -215,6 +222,8 @@ async function startSession(reqId, options, callbacks) {
     // (the SDK may ask multiple times for the same tool, e.g. for subagents)
     const recentApprovals = new Map(); // key → expiry timestamp
 
+    // canUseTool signature per SDK docs:
+    //   (toolName, input, { signal, suggestions, blockedPath, decisionReason, toolUseID, agentID })
     sdkOptions.canUseTool = async (toolName, input, context) => {
       verbose &&
         console.log(
@@ -231,6 +240,7 @@ async function startSession(reqId, options, callbacks) {
         return {
           behavior: "allow",
           updatedInput: input || {},
+          toolUseID: context?.toolUseID,
         };
       }
 
@@ -247,12 +257,13 @@ async function startSession(reqId, options, callbacks) {
           behavior: "allow",
           updatedInput: input || {},
           updatedPermissions: context?.suggestions,
+          toolUseID: context?.toolUseID,
         };
       }
 
       const permId = `${reqId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
       const description =
-        context?.title || context?.description || `Wants to use ${toolName}`;
+        context?.decisionReason || `Wants to use ${toolName}`;
 
       verbose &&
         console.log(
@@ -267,9 +278,23 @@ async function startSession(reqId, options, callbacks) {
         agentName: context?.agentID,
       });
 
-      // Wait for the user to approve or deny
+      // Wait for the user to approve or deny — also listen for abort
       const allowed = await new Promise((resolve) => {
         pendingPermissions.set(permId, { resolve });
+        // If the session is aborted while waiting, auto-deny
+        if (context?.signal) {
+          const onAbort = () => {
+            if (pendingPermissions.has(permId)) {
+              pendingPermissions.delete(permId);
+              resolve(false);
+            }
+          };
+          if (context.signal.aborted) {
+            onAbort();
+          } else {
+            context.signal.addEventListener("abort", onAbort, { once: true });
+          }
+        }
       });
       verbose &&
         console.log(`[sdk-bridge] Permission resolved: ${permId} → ${allowed}`);
@@ -281,9 +306,14 @@ async function startSession(reqId, options, callbacks) {
           behavior: "allow",
           updatedInput: input || {},
           updatedPermissions: context?.suggestions,
+          toolUseID: context?.toolUseID,
         };
       } else {
-        return { behavior: "deny", message: "User denied permission" };
+        return {
+          behavior: "deny",
+          message: "User denied permission",
+          toolUseID: context?.toolUseID,
+        };
       }
     };
   }
@@ -293,6 +323,10 @@ async function startSession(reqId, options, callbacks) {
       prompt: options.prompt || "",
       options: sdkOptions,
     });
+
+    // Store query reference so abortSession can call close()
+    const session = activeSessions.get(reqId);
+    if (session) session.query = q;
 
     // Track the last result message from the stream
     let lastResult = null;
@@ -316,9 +350,7 @@ async function startSession(reqId, options, callbacks) {
       }
     }
 
-    if (timeoutId) clearTimeout(timeoutId);
-    clearInterval(heartbeatInterval);
-    activeSessions.delete(reqId);
+    _cleanupTimers(reqId, heartbeatInterval, timeoutId);
 
     const isError = lastResult?.is_error || false;
     callbacks.onDone(
@@ -331,15 +363,21 @@ async function startSession(reqId, options, callbacks) {
             sessionId: lastResult.session_id,
             cost: lastResult.total_cost_usd,
             usage: lastResult.usage,
+            subtype: lastResult.subtype,
+            durationMs: lastResult.duration_ms,
+            durationApiMs: lastResult.duration_api_ms,
+            numTurns: lastResult.num_turns,
+            stopReason: lastResult.stop_reason,
+            modelUsage: lastResult.modelUsage,
+            permissionDenials: lastResult.permission_denials,
+            structuredOutput: lastResult.structured_output,
           }
         : null,
     );
 
     return lastResult;
   } catch (err) {
-    if (timeoutId) clearTimeout(timeoutId);
-    clearInterval(heartbeatInterval);
-    activeSessions.delete(reqId);
+    _cleanupTimers(reqId, heartbeatInterval, timeoutId);
 
     // AbortError means user cancelled — treat as code 0 with no error
     if (err.name === "AbortError" || abortController.signal.aborted) {
@@ -352,6 +390,31 @@ async function startSession(reqId, options, callbacks) {
   }
 }
 
+function _cleanupTimers(reqId, heartbeatInterval, timeoutId) {
+  if (timeoutId) clearTimeout(timeoutId);
+  clearInterval(heartbeatInterval);
+  activeSessions.delete(reqId);
+}
+
+function _terminateSession(reqId, session) {
+  session.done = true;
+
+  // Reject any pending permissions for this session so canUseTool doesn't hang
+  for (const [permId, pending] of pendingPermissions) {
+    if (permId.startsWith(`${reqId}:`)) {
+      pendingPermissions.delete(permId);
+      pending.resolve(false);
+    }
+  }
+
+  if (session.query?.close) {
+    try { session.query.close(); } catch { /* ignore */ }
+  }
+  session.abortController.abort();
+  if (session.heartbeatInterval) clearInterval(session.heartbeatInterval);
+  activeSessions.delete(reqId);
+}
+
 /**
  * Abort a running session.
  * @param {string} reqId
@@ -360,10 +423,7 @@ async function startSession(reqId, options, callbacks) {
 function abortSession(reqId) {
   const session = activeSessions.get(reqId);
   if (session && !session.done) {
-    session.done = true;
-    session.abortController.abort();
-    if (session.heartbeatInterval) clearInterval(session.heartbeatInterval);
-    activeSessions.delete(reqId);
+    _terminateSession(reqId, session);
     return true;
   }
   return false;
@@ -381,11 +441,8 @@ function hasActiveSessions() {
  */
 function abortAll() {
   for (const [reqId, session] of activeSessions) {
-    session.done = true;
-    session.abortController.abort();
-    if (session.heartbeatInterval) clearInterval(session.heartbeatInterval);
+    _terminateSession(reqId, session);
   }
-  activeSessions.clear();
 }
 
 module.exports = {

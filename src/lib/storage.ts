@@ -137,6 +137,12 @@ export function buildSubagentMd(agent: Agent, slug: string): string {
   if (def.isolation) fm += `isolation: ${def.isolation}\n`;
   if (def.background) fm += `background: true\n`;
   if (def.memory) fm += `memory: ${def.memory}\n`;
+  if (def.criticalSystemReminder)
+    fm += `criticalSystemReminder_EXPERIMENTAL: ${JSON.stringify(def.criticalSystemReminder)}\n`;
+  if (def.thinking && def.thinking !== "adaptive")
+    fm += `thinking: ${def.thinking}\n`;
+  if (def.thinkingBudget) fm += `thinkingBudget: ${def.thinkingBudget}\n`;
+  if (def.effort) fm += `effort: ${def.effort}\n`;
   if (def.skills && def.skills.length > 0) {
     fm += "skills:\n";
     for (const s of def.skills) fm += `  - ${s}\n`;
@@ -156,6 +162,18 @@ export function buildSubagentMd(agent: Agent, slug: string): string {
             for (const a of cfg.args) fm += `        - ${JSON.stringify(a)}\n`;
           }
           if (cfg.url) fm += `      url: ${cfg.url}\n`;
+          if (cfg.env && Object.keys(cfg.env).length > 0) {
+            fm += `      env:\n`;
+            for (const [k, v] of Object.entries(cfg.env)) {
+              fm += `        ${k}: ${JSON.stringify(v)}\n`;
+            }
+          }
+          if (cfg.headers && Object.keys(cfg.headers).length > 0) {
+            fm += `      headers:\n`;
+            for (const [k, v] of Object.entries(cfg.headers)) {
+              fm += `        ${k}: ${JSON.stringify(v)}\n`;
+            }
+          }
         }
       }
     }
@@ -264,6 +282,8 @@ Rules:
         systemPrompt,
         cwd: opts.workspaceDir,
         maxTurns: 1,
+        effort: "low",
+        persistSession: false,
       },
       {
         onTextDelta: (text) => {
@@ -385,6 +405,12 @@ export function parseSubagentFrontmatter(content: string): {
               command: cfg.command as string | undefined,
               args: Array.isArray(cfg.args) ? cfg.args.map(String) : undefined,
               url: cfg.url as string | undefined,
+              env: typeof cfg.env === "object" && cfg.env !== null
+                ? cfg.env as Record<string, string>
+                : undefined,
+              headers: typeof cfg.headers === "object" && cfg.headers !== null
+                ? cfg.headers as Record<string, string>
+                : undefined,
             };
           }
         }
@@ -438,6 +464,10 @@ export function parseSubagentFrontmatter(content: string): {
       isolation: raw.isolation as SubagentDef["isolation"] | undefined,
       mcpServers,
       hooks,
+      criticalSystemReminder: raw["criticalSystemReminder_EXPERIMENTAL"] as string | undefined,
+      thinking: raw.thinking as SubagentDef["thinking"] | undefined,
+      thinkingBudget: typeof raw.thinkingBudget === "number" ? raw.thinkingBudget : undefined,
+      effort: raw.effort as SubagentDef["effort"] | undefined,
       "outworked-id": raw["outworked-id"] as string | undefined,
       "outworked-name": raw["outworked-name"] as string | undefined,
       "outworked-role": raw["outworked-role"] as string | undefined,

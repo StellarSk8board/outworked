@@ -5,6 +5,7 @@
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const verbose = process.env.VERBOSE_LOGGING === "true";
 
 const DB_DIR = path.join(os.homedir(), ".outworked");
 const DB_PATH = path.join(DB_DIR, "outworked.db");
@@ -248,9 +249,10 @@ function ensureSchema(db) {
       db.prepare(
         "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
       ).run(1, "Initial schema (pre-existing)", Date.now());
-      console.log(
-        "[database] Detected pre-migration database — seeded schema_migrations at version 1",
-      );
+      verbose &&
+        console.log(
+          "[database] Detected pre-migration database — seeded schema_migrations at version 1",
+        );
     }
   }
 
@@ -262,18 +264,20 @@ function ensureSchema(db) {
   for (const migration of MIGRATIONS) {
     if (migration.version <= currentVersion) continue;
 
-    console.log(
-      `[database] Applying migration ${migration.version}: ${migration.description}`,
-    );
+    verbose &&
+      console.log(
+        `[database] Applying migration ${migration.version}: ${migration.description}`,
+      );
     db.transaction(() => {
       db.exec(migration.up);
       db.prepare(
         "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
       ).run(migration.version, migration.description, Date.now());
     })();
-    console.log(
-      `[database] Migration ${migration.version} applied successfully`,
-    );
+    verbose &&
+      console.log(
+        `[database] Migration ${migration.version} applied successfully`,
+      );
   }
 }
 
@@ -283,11 +287,13 @@ function memorySet(scope, key, value) {
   const db = getDb();
   const now = Date.now();
   const id = `${scope}:${key}`;
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO memory_entries (id, scope, key, value, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(id, scope, key, value, now, now);
+  `,
+  ).run(id, scope, key, value, now, now);
   return { id, scope, key, value };
 }
 
@@ -337,10 +343,12 @@ function memoryDelete(scope, key) {
 
 function costAddRecord(record) {
   const db = getDb();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO cost_records (id, agent_id, agent_name, session_id, timestamp, cost_usd, input_tokens, output_tokens)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     record.id,
     record.agentId,
     record.agentName,
@@ -394,11 +402,13 @@ function costGetCumulative(sessionKey) {
 
 function costSetCumulative(sessionKey, cost, inputTokens, outputTokens) {
   const db = getDb();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO cost_cumulative (session_key, cost, input_tokens, output_tokens)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(session_key) DO UPDATE SET cost = excluded.cost, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens
-  `).run(sessionKey, cost, inputTokens, outputTokens);
+  `,
+  ).run(sessionKey, cost, inputTokens, outputTokens);
 }
 
 function costDeleteCumulative(sessionKey) {
@@ -418,11 +428,13 @@ function costSetBudget(agentId, dailyLimitUsd, totalLimitUsd) {
   if (dailyLimitUsd == null && totalLimitUsd == null) {
     db.prepare("DELETE FROM cost_budgets WHERE agent_id = ?").run(agentId);
   } else {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO cost_budgets (agent_id, daily_limit_usd, total_limit_usd)
       VALUES (?, ?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET daily_limit_usd = excluded.daily_limit_usd, total_limit_usd = excluded.total_limit_usd
-    `).run(agentId, dailyLimitUsd || null, totalLimitUsd || null);
+    `,
+    ).run(agentId, dailyLimitUsd || null, totalLimitUsd || null);
   }
 }
 
@@ -431,7 +443,13 @@ function costSetBudget(agentId, dailyLimitUsd, totalLimitUsd) {
  * state, and insert a cost record — all in one transaction.
  * Returns the new CostRecord or null if the delta was zero.
  */
-function costRecordDelta(sessionKey, record, cumulativeCost, cumulativeInputTokens, cumulativeOutputTokens) {
+function costRecordDelta(
+  sessionKey,
+  record,
+  cumulativeCost,
+  cumulativeInputTokens,
+  cumulativeOutputTokens,
+) {
   const db = getDb();
   return db.transaction(() => {
     const row = db
@@ -446,11 +464,18 @@ function costRecordDelta(sessionKey, record, cumulativeCost, cumulativeInputToke
     const deltaOutput = Math.max(0, cumulativeOutputTokens - prevOutput);
 
     // Update cumulative state
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO cost_cumulative (session_key, cost, input_tokens, output_tokens)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(session_key) DO UPDATE SET cost = excluded.cost, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens
-    `).run(sessionKey, cumulativeCost, cumulativeInputTokens, cumulativeOutputTokens);
+    `,
+    ).run(
+      sessionKey,
+      cumulativeCost,
+      cumulativeInputTokens,
+      cumulativeOutputTokens,
+    );
 
     if (deltaCost <= 0 && deltaInput <= 0 && deltaOutput <= 0) return null;
 
@@ -465,13 +490,20 @@ function costRecordDelta(sessionKey, record, cumulativeCost, cumulativeInputToke
       inputTokens: deltaInput,
       outputTokens: deltaOutput,
     };
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO cost_records (id, agent_id, agent_name, session_id, timestamp, cost_usd, input_tokens, output_tokens)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      costRecord.id, costRecord.agentId, costRecord.agentName,
-      costRecord.sessionId, costRecord.timestamp,
-      costRecord.costUsd, costRecord.inputTokens, costRecord.outputTokens,
+    `,
+    ).run(
+      costRecord.id,
+      costRecord.agentId,
+      costRecord.agentName,
+      costRecord.sessionId,
+      costRecord.timestamp,
+      costRecord.costUsd,
+      costRecord.inputTokens,
+      costRecord.outputTokens,
     );
 
     return costRecord;
@@ -482,16 +514,20 @@ function costRecordDelta(sessionKey, record, cumulativeCost, cumulativeInputToke
 
 function settingGet(key) {
   const db = getDb();
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+  const row = db
+    .prepare("SELECT value FROM app_settings WHERE key = ?")
+    .get(key);
   return row ? row.value : null;
 }
 
 function settingSet(key, value) {
   const db = getDb();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO app_settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run(key, value);
+  `,
+  ).run(key, value);
 }
 
 function settingDelete(key) {
@@ -531,10 +567,12 @@ function rowToBudget(row) {
 
 function schedulerCreate(task) {
   const db = getDb();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO scheduled_tasks (id, name, type, schedule, agent_id, prompt, enabled, next_run_at, max_runs, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     task.id,
     task.name,
     task.type,
@@ -559,9 +597,7 @@ function schedulerList() {
 
 function schedulerGet(id) {
   const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM scheduled_tasks WHERE id = ?")
-    .get(id);
+  const row = db.prepare("SELECT * FROM scheduled_tasks WHERE id = ?").get(id);
   return row ? rowToScheduledTask(row) : null;
 }
 
@@ -684,10 +720,12 @@ function schedulerClaimDueTasks(now, calcNextRun) {
 function schedulerLogRun(log) {
   const db = getDb();
   return db
-    .prepare(`
+    .prepare(
+      `
     INSERT INTO task_run_logs (task_id, agent_id, started_at, status)
     VALUES (?, ?, ?, 'running')
-  `)
+  `,
+    )
     .run(log.taskId, log.agentId, log.startedAt).lastInsertRowid;
 }
 
@@ -699,10 +737,12 @@ function schedulerCompleteRun(logId, status, result, error) {
       .prepare("SELECT started_at FROM task_run_logs WHERE id = ?")
       .get(logId);
     const duration = row ? now - row.started_at : 0;
-    db.prepare(`
+    db.prepare(
+      `
       UPDATE task_run_logs SET completed_at = ?, duration_ms = ?, status = ?, result = ?, error = ?
       WHERE id = ?
-    `).run(now, duration, status, result || null, error || null, logId);
+    `,
+    ).run(now, duration, status, result || null, error || null, logId);
   })();
 }
 
@@ -710,10 +750,12 @@ function schedulerFireTask(taskId, agentId, startedAt, updates) {
   const db = getDb();
   return db.transaction(() => {
     const logId = db
-      .prepare(`
+      .prepare(
+        `
         INSERT INTO task_run_logs (task_id, agent_id, started_at, status)
         VALUES (?, ?, ?, 'running')
-      `)
+      `,
+      )
       .run(taskId, agentId, startedAt).lastInsertRowid;
 
     const fields = [];
@@ -765,10 +807,12 @@ function rowToScheduledTask(row) {
 
 function triggerCreate(trigger) {
   const db = getDb();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO triggers (id, name, enabled, type, pattern, channel_id, sender_allowlist, agent_id, prompt, created_at, trigger_count)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-  `).run(
+  `,
+  ).run(
     trigger.id,
     trigger.name,
     trigger.enabled ? 1 : 0,
@@ -866,11 +910,13 @@ function rowToTrigger(row) {
 function channelConfigSave(config) {
   const db = getDb();
   const now = Date.now();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO channel_configs (id, type, name, config, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, config = excluded.config, status = excluded.status, updated_at = excluded.updated_at
-  `).run(
+  `,
+  ).run(
     config.id,
     config.type,
     config.name,
@@ -906,10 +952,12 @@ function channelConfigDelete(id) {
 
 function channelMessageSave(msg) {
   const db = getDb();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO channel_messages (channel_id, direction, conversation_id, sender, content, metadata, timestamp)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     msg.channelId,
     msg.direction,
     msg.conversationId || null,
@@ -941,11 +989,13 @@ function skillAuthGet(runtime) {
 function skillAuthSave(runtime, credentials, config, status) {
   const db = getDb();
   const now = Date.now();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO skill_auth (skill_runtime, credentials, config, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(skill_runtime) DO UPDATE SET credentials = excluded.credentials, config = excluded.config, status = excluded.status, updated_at = excluded.updated_at
-  `).run(runtime, credentials, JSON.stringify(config || {}), status, now, now);
+  `,
+  ).run(runtime, credentials, JSON.stringify(config || {}), status, now, now);
 }
 
 function skillAuthDelete(runtime) {
@@ -958,10 +1008,12 @@ function skillAuthDelete(runtime) {
 function customSkillCreate(skill) {
   const db = getDb();
   const now = Date.now();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO custom_skills (id, name, description, content, emoji, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     skill.id,
     skill.name,
     skill.description || "",
@@ -991,15 +1043,29 @@ function customSkillUpdate(id, updates) {
   const db = getDb();
   const fields = [];
   const values = [];
-  if (updates.name !== undefined) { fields.push("name = ?"); values.push(updates.name); }
-  if (updates.description !== undefined) { fields.push("description = ?"); values.push(updates.description); }
-  if (updates.content !== undefined) { fields.push("content = ?"); values.push(updates.content); }
-  if (updates.emoji !== undefined) { fields.push("emoji = ?"); values.push(updates.emoji || null); }
+  if (updates.name !== undefined) {
+    fields.push("name = ?");
+    values.push(updates.name);
+  }
+  if (updates.description !== undefined) {
+    fields.push("description = ?");
+    values.push(updates.description);
+  }
+  if (updates.content !== undefined) {
+    fields.push("content = ?");
+    values.push(updates.content);
+  }
+  if (updates.emoji !== undefined) {
+    fields.push("emoji = ?");
+    values.push(updates.emoji || null);
+  }
   if (fields.length === 0) return;
   fields.push("updated_at = ?");
   values.push(Date.now());
   values.push(id);
-  db.prepare(`UPDATE custom_skills SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+  db.prepare(`UPDATE custom_skills SET ${fields.join(", ")} WHERE id = ?`).run(
+    ...values,
+  );
 }
 
 function customSkillDelete(id) {

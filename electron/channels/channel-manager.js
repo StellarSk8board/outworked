@@ -4,6 +4,7 @@
 // to the renderer via IPC.
 
 const db = require("../db/database");
+const verbose = process.env.VERBOSE_LOGGING === "true";
 
 /** @type {Map<string, import('./base-channel')>} id → channel instance */
 const _registry = new Map();
@@ -69,9 +70,10 @@ async function connectChannel(id) {
     await channel.connect();
     _persistStatus(channel);
     _onStatusChange?.();
-    console.log(
-      `[ChannelManager] Connected channel '${id}' (${channel.type})`,
-    );
+    verbose &&
+      console.log(
+        `[ChannelManager] Connected channel '${id}' (${channel.type})`,
+      );
   } catch (err) {
     channel.status = "error";
     channel.errorMessage = err.message;
@@ -95,7 +97,7 @@ async function disconnectChannel(id) {
   await channel.disconnect();
   _persistStatus(channel);
   _onStatusChange?.();
-  console.log(`[ChannelManager] Disconnected channel '${id}'`);
+  verbose && console.log(`[ChannelManager] Disconnected channel '${id}'`);
 }
 
 // ─── Outbound messaging ───────────────────────────────────────
@@ -269,7 +271,7 @@ function _handleInbound(channelId, msg) {
   _pruneExpiredOutbound();
   const echoKey = `${channelId}:${full.conversationId || ""}:${_hashContent(full.content)}`;
   if (_recentOutbound.has(echoKey)) {
-    console.log(`[ChannelManager] Skipping echo-back: ${echoKey}`);
+    verbose && console.log(`[ChannelManager] Skipping echo-back: ${echoKey}`);
     _recentOutbound.delete(echoKey);
     return;
   }
@@ -283,10 +285,17 @@ function _handleInbound(channelId, msg) {
       const senderNorm = full.sender.replace(/[\s\-()]/g, "");
       const isAllowed = allowedSenders.some((s) => {
         const norm = s.replace(/[\s\-()]/g, "");
-        return senderNorm === norm || senderNorm.endsWith(norm) || norm.endsWith(senderNorm);
+        return (
+          senderNorm === norm ||
+          senderNorm.endsWith(norm) ||
+          norm.endsWith(senderNorm)
+        );
       });
       if (!isAllowed) {
-        console.log(`[ChannelManager] Blocked message from ${full.sender} — not in allowedSenders`);
+        verbose &&
+          console.log(
+            `[ChannelManager] Blocked message from ${full.sender} — not in allowedSenders`,
+          );
         return;
       }
     }
@@ -327,9 +336,7 @@ function _handleInbound(channelId, msg) {
       });
     }
   } catch (err) {
-    console.error(
-      `[ChannelManager] Trigger evaluation failed: ${err.message}`,
-    );
+    console.error(`[ChannelManager] Trigger evaluation failed: ${err.message}`);
   }
 }
 

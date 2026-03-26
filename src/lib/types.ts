@@ -119,6 +119,8 @@ export interface McpServerInline {
   command?: string;
   args?: string[];
   url?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
 }
 
 export interface HookCommand {
@@ -136,7 +138,7 @@ export interface SubagentDef {
   prompt?: string;
   tools?: string[];
   disallowedTools?: string[];
-  model?: string;
+  model?: "sonnet" | "opus" | "haiku" | "inherit" | string;
   permissionMode?: string;
   maxTurns?: number;
   skills?: string[];
@@ -145,6 +147,10 @@ export interface SubagentDef {
   isolation?: "worktree";
   mcpServers?: (string | Record<string, McpServerInline>)[];
   hooks?: Record<string, HookMatcher[]>;
+  criticalSystemReminder?: string;
+  thinking?: "adaptive" | "enabled" | "disabled";
+  thinkingBudget?: number;
+  effort?: "low" | "medium" | "high" | "max";
 }
 
 export interface Agent {

@@ -5,6 +5,7 @@
 
 const BaseRuntime = require("../base-runtime");
 const db = require("../../db/database");
+const verbose = process.env.VERBOSE_LOGGING === "true";
 
 const CHECK_INTERVAL_MS = 10_000; // Check for due tasks every 10s
 
@@ -172,7 +173,10 @@ class SchedulerRuntime extends BaseRuntime {
   async init() {
     this.status = "connected";
     this._startChecking();
-    console.log(`[scheduler] Initialized, checking every ${CHECK_INTERVAL_MS / 1000}s`);
+    verbose &&
+      console.log(
+        `[scheduler] Initialized, checking every ${CHECK_INTERVAL_MS / 1000}s`,
+      );
   }
 
   async destroy() {
@@ -206,7 +210,9 @@ class SchedulerRuntime extends BaseRuntime {
     }
 
     if (!nextRunAt || isNaN(nextRunAt) || nextRunAt <= 0) {
-      throw new Error(`Invalid schedule: could not parse "${schedule}" for type "${type}"`);
+      throw new Error(
+        `Invalid schedule: could not parse "${schedule}" for type "${type}"`,
+      );
     }
 
     db.schedulerCreate({
@@ -340,16 +346,23 @@ class SchedulerRuntime extends BaseRuntime {
       const now = Date.now();
       const tasks = db.schedulerList();
       if (!tasks || tasks.length === 0) return;
-      console.log(`[scheduler] Checking ${tasks.length} tasks at ${new Date(now).toISOString()}`);
+      verbose &&
+        console.log(
+          `[scheduler] Checking ${tasks.length} tasks at ${new Date(now).toISOString()}`,
+        );
 
       for (const task of tasks) {
         if (!task.enabled) continue;
         if (!task.nextRunAt || task.nextRunAt > now) {
-          console.log(`[scheduler] Task "${task.name}" not due yet (nextRunAt: ${new Date(task.nextRunAt).toISOString()}, now: ${new Date(now).toISOString()})`);
+          verbose &&
+            console.log(
+              `[scheduler] Task "${task.name}" not due yet (nextRunAt: ${new Date(task.nextRunAt).toISOString()}, now: ${new Date(now).toISOString()})`,
+            );
           continue;
         }
 
-        console.log(`[scheduler] Firing task "${task.name}" (${task.id})`);
+        verbose &&
+          console.log(`[scheduler] Firing task "${task.name}" (${task.id})`);
         // Task is due — fire directly to renderer as a trigger
         this._fireDueTask(task);
 
@@ -389,16 +402,20 @@ function _parseOneTimeSchedule(schedule, now) {
   const s = schedule.trim();
 
   // Relative: "+120s", "+5m", "+2h", "+1d"
-  const relMatch = s.match(/^\+?\s*(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|ms)?$/i);
+  const relMatch = s.match(
+    /^\+?\s*(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|ms)?$/i,
+  );
   if (relMatch) {
     const val = parseInt(relMatch[1], 10);
-    const unit = (relMatch[2] || 'ms').toLowerCase();
+    const unit = (relMatch[2] || "ms").toLowerCase();
     const ms = _unitToMs(unit, val);
     if (ms > 0) return now + ms;
   }
 
   // Relative: "in 5 minutes", "in 2 hours"
-  const inMatch = s.match(/^in\s+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|ms)$/i);
+  const inMatch = s.match(
+    /^in\s+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|ms)$/i,
+  );
   if (inMatch) {
     const val = parseInt(inMatch[1], 10);
     const unit = inMatch[2].toLowerCase();
@@ -436,10 +453,12 @@ function _parseOneTimeSchedule(schedule, now) {
 function _parseIntervalMs(schedule) {
   const s = schedule.trim();
 
-  const match = s.match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|ms)?$/i);
+  const match = s.match(
+    /^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?|ms)?$/i,
+  );
   if (match) {
     const val = parseInt(match[1], 10);
-    const unit = (match[2] || 'ms').toLowerCase();
+    const unit = (match[2] || "ms").toLowerCase();
     return _unitToMs(unit, val);
   }
 
@@ -450,12 +469,29 @@ function _parseIntervalMs(schedule) {
 
 function _unitToMs(unit, val) {
   switch (unit) {
-    case 'ms': return val;
-    case 's': case 'sec': case 'second': case 'seconds': return val * 1000;
-    case 'm': case 'min': case 'minute': case 'minutes': return val * 60_000;
-    case 'h': case 'hr': case 'hour': case 'hours': return val * 3600_000;
-    case 'd': case 'day': case 'days': return val * 86400_000;
-    default: return val;
+    case "ms":
+      return val;
+    case "s":
+    case "sec":
+    case "second":
+    case "seconds":
+      return val * 1000;
+    case "m":
+    case "min":
+    case "minute":
+    case "minutes":
+      return val * 60_000;
+    case "h":
+    case "hr":
+    case "hour":
+    case "hours":
+      return val * 3600_000;
+    case "d":
+    case "day":
+    case "days":
+      return val * 86400_000;
+    default:
+      return val;
   }
 }
 

@@ -240,6 +240,28 @@ let githubToken = "";
 const shells = new Map(); // id → { proc, cwd }
 // SDK bridge manages active sessions (replaces the old claudeProcs Map)
 
+// Kill a shell process and its entire process tree (child servers like vite, npx serve, etc.)
+function killShellTree(proc) {
+  if (!proc || proc.killed) return;
+  const pid = proc.pid;
+  if (!pid) { proc.kill(); return; }
+  try {
+    // Kill the entire process group — on Unix, passing -pid kills all children
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    // Fallback: kill just the shell process (e.g. if not a process group leader)
+    try { proc.kill("SIGTERM"); } catch { /* already dead */ }
+  }
+}
+
+// Kill all tracked shells and their child process trees
+function killAllShells() {
+  for (const [, entry] of shells) {
+    killShellTree(entry.proc);
+  }
+  shells.clear();
+}
+
 // ─── Caffeinate: prevent sleep while tasks are in flight ──────────
 let caffeinateBlockerId = null;
 
@@ -313,7 +335,10 @@ function setupShellIPC() {
       : spawn(SHELL_CMD, ["-l"], {
           cwd: safeCwd,
           env: augmentedEnv({ TERM: "xterm-256color" }),
+          detached: true,
         });
+    // Unref so the shell doesn't prevent the app from exiting
+    proc.unref();
     shells.set(id, { proc, cwd: safeCwd });
 
     proc.stdout.on("data", (data) => {
@@ -363,11 +388,11 @@ function setupShellIPC() {
     return false;
   });
 
-  // Kill a shell
+  // Kill a shell and all its child processes (dev servers, etc.)
   ipcMain.handle("shell:kill", (_event, id) => {
     const entry = shells.get(id);
     if (entry && entry.proc) {
-      entry.proc.kill();
+      killShellTree(entry.proc);
       shells.delete(id);
       return true;
     }
@@ -588,13 +613,20 @@ function setupShellIPC() {
         if (result && mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("claude-code:event", id, {
             type: "result",
-            subtype: code === 0 ? "success" : "error_during_execution",
+            subtype: result.subtype || (code === 0 ? "success" : "error_during_execution"),
             result: result.text || "",
             session_id: result.sessionId,
             total_cost_usd: result.cost,
             usage: result.usage,
             is_error: code !== 0,
             errors: error ? [error] : [],
+            duration_ms: result.durationMs,
+            duration_api_ms: result.durationApiMs,
+            num_turns: result.numTurns,
+            stop_reason: result.stopReason,
+            modelUsage: result.modelUsage,
+            permission_denials: result.permissionDenials,
+            structured_output: result.structuredOutput,
           });
         }
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -983,10 +1015,7 @@ function setupShellIPC() {
 
 // Clean up child processes and tunnels on quit
 app.on("before-quit", () => {
-  for (const [, entry] of shells) {
-    if (entry.proc && !entry.proc.killed) entry.proc.kill();
-  }
-  shells.clear();
+  killAllShells();
   sdkBridge.abortAll();
   try {
     require("./skills/skill-runtime-manager").destroyAll();
@@ -1045,6 +1074,9 @@ function setupFilesystemIPC() {
   ipcMain.handle("fs:getWorkspace", () => workspaceDir);
 
   ipcMain.handle("fs:setWorkspace", (_event, dir) => {
+    // Kill all running shells (and their child servers) when switching projects
+    killAllShells();
+    sdkBridge.abortAll();
     // Validate: must be an absolute path and not a system-critical directory
     const resolved = path.resolve(dir);
     const blockedRoots = [
@@ -1077,6 +1109,9 @@ function setupFilesystemIPC() {
       title: "Choose workspace folder",
     });
     if (result.canceled || result.filePaths.length === 0) return null;
+    // Kill all running shells (and their child servers) when switching projects
+    killAllShells();
+    sdkBridge.abortAll();
     workspaceDir = result.filePaths[0];
     return workspaceDir;
   });

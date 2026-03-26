@@ -1,7 +1,7 @@
 // ─── Cost & Token Tracking ───────────────────────────────────────
 //
 // Persists cost records to SQLite via Electron IPC. Each record captures a
-// single Claude Code interaction (one sendMessage or ClaudeCodePanel round-trip).
+// single Claude Code interaction (one sendMessage round-trip).
 
 export interface CostRecord {
   id: string;

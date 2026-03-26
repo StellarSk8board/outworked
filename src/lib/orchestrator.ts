@@ -6,7 +6,7 @@ import {
   Message,
   SubagentDef,
 } from "./types";
-import { sendMessage, sendMessageWithCost } from "./ai";
+import { sendMessage } from "./ai";
 import { PermissionRequest } from "./terminal";
 import { getSetting } from "./settings";
 import {
@@ -54,9 +54,13 @@ export interface OrchestrationResult {
 
 const ROUTER_SYSTEM = `You are the Office Manager. You receive high-level instructions and break them into tasks assigned to specific employees.
 
-You will be given a list of current employees with their names, roles, and what they're good at. Given the user's instruction, decide which employee(s) should handle which part of the work. Not Every employee needs to be assigned a task — only assign relevant ones. You can also create new employees if needed (see below).
+You will be given a list of current employees with their names, roles, and what they're good at. Given the user's instruction, decide which employee(s) should handle which part of the work. Not every employee needs to be assigned a task — only assign relevant ones.
 
-IMPORTANT: If the task requires expertise that NO current employee has, you MUST create new employees with the right skills. For example, if the task needs a backend engineer but only a designer exists, create one.
+HIRING NEW SPECIALISTS — this is critical:
+- If a task requires expertise that no current employee's role covers well, you MUST create a new specialist agent for it. Do NOT force-fit tasks onto employees whose roles don't match.
+- Role fit matters: a "UX Designer" should not be assigned backend API work. A "Frontend Engineer" should not be assigned database schema design. If the match is poor, hire someone new.
+- Examples of when to hire: the task needs a backend engineer but you only have frontend/design people; the task needs a data scientist but you only have engineers; the task involves DevOps but no one has that role.
+- When in doubt about fit, prefer creating a specialist over assigning to a mismatched employee. Specialists produce better results.
 
 You will also be given:
 - A list of existing project directories in the workspace
@@ -87,9 +91,9 @@ For implementation tasks (writing code, creating files, building features, fixin
 }
 
 Rules:
-- You can add new Agents if needed, but be concise and only create what is necessary. Each new Agent must have a distinct name, a clear role, and a detailed personality prompt that defines their expertise.
-- "newAgents" can be an empty array if existing employees are sufficient
-- You may only add 5 new employees per instruction — be concise and only create what is necessary
+- Create new specialist agents whenever the task needs skills that existing employees' roles don't cover. Each new agent must have a distinct name, a clear role, and a detailed personality prompt that defines their expertise.
+- "newAgents" should be empty ONLY when existing employees' roles are a genuinely good fit for every part of the task
+- You may create up to 5 new employees per instruction
 - You may assign tasks to both existing AND newly created employees
 - Use EXACT employee names (existing or newly created) in assignments
 - NEVER assign tasks to yourself (the Office Manager / Boss). You plan and coordinate — employees execute.
@@ -112,7 +116,14 @@ WEB PREVIEW — serving and sharing websites:
 - When a task involves creating a website, landing page, or any HTML/frontend project, the FINAL subtask for the responsible agent MUST be to start a local web server (e.g. "npx serve ." or "npx serve dist" or "npm run dev") so the user can preview the result.
 - The app will automatically detect the local server URL and open a preview window for the user.
 - Do NOT tell the agent to open a browser — just start the server. The preview is handled automatically.
-- To share the site with someone externally, the agent should use the tunnel_start tool to get a public URL, then use send_message to share the link via iMessage or Slack.`;
+- To share the site with someone externally, the agent should use the tunnel_start tool to get a public URL, then use send_message to share the link via iMessage or Slack.
+
+TUNNEL HOST CONFIG — IMPORTANT when using tunnel_start:
+- Tunnels expose local servers via a public URL with a different hostname. Dev servers like Vite and Next.js block requests from unknown hosts by default, so the tunnel will show errors unless you configure them first.
+- For Vite projects: before starting the dev server, ensure vite.config.ts/js has server.allowedHosts set to true (e.g. server: { host: true, allowedHosts: true }).
+- For Next.js projects (v15+): ensure next.config.js/ts has allowedDevOrigins: ['*.trycloudflare.com'] (or a wildcard that covers the tunnel domain).
+- For plain "npx serve" or static file servers: no configuration needed — they accept all hosts.
+- The agent MUST apply these config changes BEFORE starting the dev server, not after.`;
 
 /**
  * Extract and parse a JSON object from an LLM reply that may contain
@@ -139,6 +150,42 @@ function extractJson(reply: string): Record<string, unknown> {
 
   return JSON.parse(jsonStr);
 }
+
+/** JSON Schema for the router's structured output — matches OrchestrationResult */
+const ROUTER_OUTPUT_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    plan: { type: "string", description: "Brief summary of the plan" },
+    workingDirectory: { type: "string", description: "Short slug for the working directory" },
+    directAnswer: { type: "string", description: "Direct answer if no delegation needed" },
+    newAgents: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          role: { type: "string" },
+          personality: { type: "string" },
+        },
+        required: ["name", "role", "personality"],
+      },
+    },
+    assignments: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          agentName: { type: "string" },
+          task: { type: "string" },
+          subtasks: { type: "array", items: { type: "string" } },
+          group: { type: "number" },
+        },
+        required: ["agentName", "task", "subtasks", "group"],
+      },
+    },
+  },
+  required: ["plan", "workingDirectory", "newAgents", "assignments"],
+};
 
 export async function routeTasks(
   instruction: string,
@@ -280,7 +327,7 @@ export async function routeTasks(
   let routerOutputTokens = 0;
 
   for (let attempt = 0; attempt < MAX_ROUTE_ATTEMPTS; attempt++) {
-    const result = await sendMessageWithCost(
+    const result = await sendMessage(
       routerAgent,
       attempt === 0
         ? prompt
@@ -288,9 +335,16 @@ export async function routeTasks(
       keys,
       onStream ?? (() => {}),
       signal,
-      { useTools: true, onPermissionRequest },
+      {
+        useTools: true,
+        onPermissionRequest,
+        outputFormat: { type: "json_schema", schema: ROUTER_OUTPUT_SCHEMA },
+      },
     );
-    const reply = result.text;
+    // Prefer structuredOutput (validated JSON from SDK) over freeform text
+    const reply = result.structuredOutput
+      ? JSON.stringify(result.structuredOutput)
+      : result.text;
     if (result.cost) routerCost = result.cost;
     if (result.inputTokens) routerInputTokens = result.inputTokens;
     if (result.outputTokens) routerOutputTokens = result.outputTokens;
@@ -298,7 +352,7 @@ export async function routeTasks(
 
     // If the reply has no JSON structure at all, treat it as a direct answer
     // immediately instead of retrying.
-    if (!reply.includes("{")) {
+    if (!result.structuredOutput && !reply.includes("{")) {
       return {
         assignments: [],
         plan: "Answered directly",
@@ -312,7 +366,11 @@ export async function routeTasks(
     }
 
     try {
-      const parsed = extractJson(reply);
+      // Use structured output directly if available (pre-validated by SDK),
+      // otherwise fall back to extracting JSON from freeform text.
+      const parsed = result.structuredOutput
+        ? (result.structuredOutput as Record<string, unknown>)
+        : extractJson(reply);
 
       // Parse new agent specs
       const newAgents: NewAgentSpec[] = ((parsed.newAgents || []) as Array<{ name: string; role: string; personality: string }>).map(
@@ -634,10 +692,10 @@ export async function executeTask(
   outputTokens?: number;
 }> {
   // Two-tier stuck detection:
-  // - "slow" at 3 minutes: soft warning, no abort
-  // - "stuck" at 5 minutes: enables abort
-  const SLOW_TIMEOUT_MS = 180_000;
-  const STUCK_TIMEOUT_MS = 300_000;
+  // - "slow" at 5 minutes: soft warning, no abort
+  // - "stuck" at 10 minutes: enables abort
+  const SLOW_TIMEOUT_MS = 300_000;
+  const STUCK_TIMEOUT_MS = 600_000;
   let lastActivity = Date.now();
   let slowFired = false;
   let stuckFired = false;
@@ -704,7 +762,7 @@ export async function executeTask(
   };
 
   try {
-    const result = await sendMessageWithCost(
+    const result = await sendMessage(
       updatedAgent,
       userMsg.content,
       keys,
@@ -762,54 +820,6 @@ export async function executeTask(
 /**
  * Ask the agent to break a task into a checklist of to-do items.
  */
-export async function generateTodoList(
-  agent: Agent,
-  task: string,
-  keys: ApiKeys,
-  skills?: AgentSkill[],
-): Promise<AgentTodo[]> {
-  const prompt = `Break down this task into a short checklist of 3-6 concrete action items. Respond ONLY with a JSON array of strings — no extra text.\n\nTask: ${task}`;
-
-  const tempAgent: Agent = {
-    ...agent,
-    history: [],
-  };
-
-  const reply = await sendMessage(
-    tempAgent,
-    prompt,
-    keys,
-    () => {},
-    undefined,
-    { useTools: true, skills },
-  );
-
-  try {
-    const jsonStr = reply
-      .replace(/```json?\n?/g, "")
-      .replace(/```/g, "")
-      .trim();
-    const items: string[] = JSON.parse(jsonStr);
-    if (!Array.isArray(items)) throw new Error("Not an array");
-    return items.map((text) => ({
-      id: crypto.randomUUID(),
-      text: typeof text === "string" ? text : String(text),
-      status: "pending" as const,
-      timestamp: Date.now(),
-    }));
-  } catch {
-    // Fallback: single todo with the whole task
-    return [
-      {
-        id: crypto.randomUUID(),
-        text: task,
-        status: "pending" as const,
-        timestamp: Date.now(),
-      },
-    ];
-  }
-}
-
 // ─── Claude Code Agent Teams orchestration ────────────────────
 
 export interface AgentTeamCallbacks {
@@ -823,8 +833,14 @@ export interface AgentTeamCallbacks {
     status: "working" | "done" | "waiting-input" | "waiting-approval" | "slow" | "stuck",
     thought?: string,
   ) => void;
+  /** Called when the boss delegates to a specific agent with a task */
+  onAgentDelegation?: (agentName: string, task: string) => void;
   /** Called when the boss delegates to an agent name not in the roster — allows dynamic creation */
   onNewAgent?: (agentName: string, description: string) => void;
+  /** Per-agent text streaming — routes text deltas to the active agent */
+  onAgentStreamDelta?: (agentName: string, delta: string, fullText: string) => void;
+  /** Per-agent tool use — fires when an agent (not the boss) uses a tool */
+  onAgentToolUse?: (agentName: string, toolName: string, input: Record<string, unknown>) => void;
   /** Called when a permission request event is received for the team */
   onPermissionRequest?: (
     agentName: string | undefined,
@@ -857,6 +873,10 @@ export async function routeTasksViaClaudeCode(
   cost?: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** Per-agent cost breakdown (time-proportional distribution of total cost) */
+  agentCosts?: Record<string, { cost: number; inputTokens: number; outputTokens: number }>;
+  /** Names of agents that were delegated to */
+  delegatedAgents?: string[];
 }> {
   const workspace = await getWorkspace();
 
@@ -929,8 +949,9 @@ ${
       (await getSetting("outworked_permission_prompts")) !== "0"
         ? "default"
         : "acceptEdits",
-    continueSession: !!sessionId,
-    resumeSessionId: sessionId,
+    // Use resume when we have an explicit session ID — don't also set continue,
+    // which resumes the *most recent* session and may not be ours.
+    ...(sessionId ? { resumeSessionId: sessionId } : {}),
   };
 
   onDebug?.(
@@ -941,8 +962,22 @@ ${
   // Two-tier stuck detection per agent
   const agentLastActivity = new Map<string, number>();
   const agentSlowFired = new Set<string>();
-  const SLOW_TIMEOUT_MS = 180_000; // 3 minutes = soft warning
-  const STUCK_TIMEOUT_MS = 300_000; // 5 minutes = likely stuck
+  const SLOW_TIMEOUT_MS = 300_000; // 5 minutes = soft warning
+  const STUCK_TIMEOUT_MS = 600_000; // 10 minutes = likely stuck
+
+  // ── Per-agent tracking ──
+  // Map toolUseId → agentName so we can attribute nested events to agents
+  const toolUseIdToAgent = new Map<string, string>();
+  // Per-agent accumulated stream text
+  const agentStreamText = new Map<string, string>();
+  // Track which agent is "active" (last delegated to) as a fallback
+  // when parent_tool_use_id is not available on events
+  let currentActiveAgent: string | null = null;
+  // Per-agent wall-clock time for cost distribution
+  const agentStartTime = new Map<string, number>();
+  const agentTotalTime = new Map<string, number>();
+  // Track all delegated agent names (in delegation order)
+  const delegatedAgentNames: string[] = [];
 
   const stuckCheckInterval = setInterval(() => {
     const now = Date.now();
@@ -950,24 +985,58 @@ ${
       const elapsed = now - ts;
       if (!agentSlowFired.has(name) && elapsed > SLOW_TIMEOUT_MS) {
         agentSlowFired.add(name);
-        callbacks.onAgentStatus?.(name, "slow", "No progress for 3 minutes");
+        callbacks.onAgentStatus?.(name, "slow", "No progress for 5 minutes");
       }
       if (elapsed > STUCK_TIMEOUT_MS) {
-        callbacks.onAgentStatus?.(name, "stuck", "No progress for 5 minutes");
+        callbacks.onAgentStatus?.(name, "stuck", "No progress for 10 minutes");
       }
     }
   }, 15_000);
+
+  /** Resolve which agent an event belongs to via parent_tool_use_id or fallback stack */
+  function resolveAgent(parentToolUseId?: string | null): string | null {
+    if (parentToolUseId && toolUseIdToAgent.has(parentToolUseId)) {
+      return toolUseIdToAgent.get(parentToolUseId)!;
+    }
+    return currentActiveAgent;
+  }
+
+  /** Mark an agent as done and record its active time */
+  function markAgentDone(agentName: string) {
+    const start = agentStartTime.get(agentName.toLowerCase());
+    if (start) {
+      const elapsed = Date.now() - start;
+      agentTotalTime.set(
+        agentName.toLowerCase(),
+        (agentTotalTime.get(agentName.toLowerCase()) || 0) + elapsed,
+      );
+      agentStartTime.delete(agentName.toLowerCase());
+    }
+    if (currentActiveAgent?.toLowerCase() === agentName.toLowerCase()) {
+      currentActiveAgent = null;
+    }
+    callbacks.onAgentStatus?.(agentName, "done");
+  }
 
   // Fix: streamCallbacks must be defined before use in catch block
   let streamCallbacks: ClaudeCodeStreamCallbacks = {
     onTextDelta: (text) => {
       fullText += text;
-      callbacks.onTeamEvent?.({ type: "text", text });
+      // Route text to the active agent if one exists
+      const agent = currentActiveAgent;
+      if (agent) {
+        const prev = agentStreamText.get(agent) || "";
+        const updated = prev + text;
+        agentStreamText.set(agent, updated);
+        callbacks.onAgentStreamDelta?.(agent, text, updated);
+      }
+      callbacks.onTeamEvent?.({ type: "text", text, agentName: agent || undefined });
     },
-    onToolUse: (name, input) => {
+    onToolUse: (name, input, toolUseId) => {
       onDebug?.(
         `[event] tool_use: ${name} ${JSON.stringify(input).slice(0, 300)}`,
       );
+
       if (name === "Agent") {
         const agentName = (input.agent ?? input.name ?? "") as string;
         const taskDesc = ((input.prompt ?? input.task ?? "") as string).slice(
@@ -983,8 +1052,31 @@ ${
         }
 
         if (agentName) {
+          // If a previous agent was active (sequential delegation), mark it done
+          if (currentActiveAgent && currentActiveAgent.toLowerCase() !== agentName.toLowerCase()) {
+            markAgentDone(currentActiveAgent);
+          }
+
+          // Track this delegation
+          currentActiveAgent = agentName;
+          agentStreamText.set(agentName, "");
           agentLastActivity.set(agentName.toLowerCase(), Date.now());
           agentSlowFired.delete(agentName.toLowerCase());
+
+          // Record start time for cost distribution
+          if (!agentStartTime.has(agentName.toLowerCase())) {
+            agentStartTime.set(agentName.toLowerCase(), Date.now());
+          }
+
+          // Map tool_use ID to agent name for parent_tool_use_id tracking
+          if (toolUseId) {
+            toolUseIdToAgent.set(toolUseId, agentName);
+          }
+
+          // Track delegated agents (no duplicates)
+          if (!delegatedAgentNames.includes(agentName)) {
+            delegatedAgentNames.push(agentName);
+          }
         }
         if (
           agentName &&
@@ -1006,6 +1098,15 @@ ${
           "working",
           `Working on: ${taskDesc}`,
         );
+        callbacks.onAgentDelegation?.(agentName, taskDesc);
+      } else {
+        // Non-Agent tool call — attribute to the current active agent
+        const ownerAgent = currentActiveAgent;
+        if (ownerAgent) {
+          agentLastActivity.set(ownerAgent.toLowerCase(), Date.now());
+          agentSlowFired.delete(ownerAgent.toLowerCase());
+          callbacks.onAgentToolUse?.(ownerAgent, name, input as Record<string, unknown>);
+        }
       }
       callbacks.onTeamEvent?.({
         type: "tool_use",
@@ -1015,7 +1116,17 @@ ${
     },
     onEvent: (event) => {
       onDebug?.(`[raw] ${JSON.stringify(event).slice(0, 500)}`);
-      callbacks.onTeamEvent?.({ type: event.type });
+
+      // Use parent_tool_use_id to route events to the right agent
+      const parentId = event.parent_tool_use_id;
+      const ownerAgent = resolveAgent(parentId);
+
+      // Detect agent completion via result events
+      if (event.type === "result" && event.subtype === "tool_result" && ownerAgent) {
+        markAgentDone(ownerAgent);
+      }
+
+      callbacks.onTeamEvent?.({ type: event.type, agentName: ownerAgent || undefined });
       if (event.type === "permission_request") {
         const ev = event as unknown as Record<string, unknown>;
         const toolName =
@@ -1026,7 +1137,7 @@ ${
           (ev.description as string) ||
           (ev.message as string) ||
           `Wants to use ${toolName}`;
-        const agentName = ev.agent_name as string | undefined;
+        const agentName = (ev.agent_name as string) || ownerAgent || undefined;
         const permId = ev.perm_id as string | undefined;
         callbacks.onPermissionRequest?.(agentName, toolName, desc, undefined, permId);
         if (agentName) {
@@ -1054,6 +1165,35 @@ ${
     },
   };
 
+  /** Distribute total cost across agents proportionally by wall-clock time */
+  function buildAgentCosts(
+    totalCost: number | undefined,
+    totalInput: number | undefined,
+    totalOutput: number | undefined,
+  ): Record<string, { cost: number; inputTokens: number; outputTokens: number }> | undefined {
+    // Finalize any still-running agents' time
+    for (const [name, start] of agentStartTime) {
+      const elapsed = Date.now() - start;
+      agentTotalTime.set(name, (agentTotalTime.get(name) || 0) + elapsed);
+    }
+    agentStartTime.clear();
+
+    if (!totalCost || agentTotalTime.size === 0) return undefined;
+    const totalTimeMs = [...agentTotalTime.values()].reduce((a, b) => a + b, 0);
+    if (totalTimeMs === 0) return undefined;
+
+    const costs: Record<string, { cost: number; inputTokens: number; outputTokens: number }> = {};
+    for (const [name, timeMs] of agentTotalTime) {
+      const ratio = timeMs / totalTimeMs;
+      costs[name] = {
+        cost: totalCost * ratio,
+        inputTokens: Math.round((totalInput || 0) * ratio),
+        outputTokens: Math.round((totalOutput || 0) * ratio),
+      };
+    }
+    return costs;
+  }
+
   try {
     const result = await runClaudeCode(
       options,
@@ -1066,6 +1206,8 @@ ${
       cost: result.cost,
       inputTokens: result.usage?.input_tokens,
       outputTokens: result.usage?.output_tokens,
+      agentCosts: buildAgentCosts(result.cost, result.usage?.input_tokens, result.usage?.output_tokens),
+      delegatedAgents: delegatedAgentNames.length > 0 ? delegatedAgentNames : undefined,
     };
   } catch (err) {
     // If resume failed because the session no longer exists, retry as a fresh session
@@ -1093,6 +1235,8 @@ ${
         cost: result.cost,
         inputTokens: result.usage?.input_tokens,
         outputTokens: result.usage?.output_tokens,
+        agentCosts: buildAgentCosts(result.cost, result.usage?.input_tokens, result.usage?.output_tokens),
+        delegatedAgents: delegatedAgentNames.length > 0 ? delegatedAgentNames : undefined,
       };
     }
     throw err;

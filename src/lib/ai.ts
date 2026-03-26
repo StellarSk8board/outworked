@@ -1,4 +1,4 @@
-import { Agent, AgentSkill, ApiKeys, Message, ToolCall } from "./types";
+import { Agent, AgentSkill, ApiKeys, Message, SubagentDef, ToolCall } from "./types";
 import { AGENT_TOOLS, ToolDefinition, executeTool } from "./tools";
 import { getWorkspace } from "./filesystem";
 import { getSetting } from "./settings";
@@ -9,6 +9,21 @@ import {
   PermissionRequest,
 } from "./terminal";
 import { getBundledSkill } from "./bundled-skills";
+
+async function buildThinkingConfig(
+  subDef?: SubagentDef,
+): Promise<ClaudeCodeAdvancedOptions["thinking"]> {
+  const thinking = subDef?.thinking || (await getSetting("outworked_default_thinking")) || "adaptive";
+  if (thinking === "adaptive") return undefined;
+  if (thinking === "disabled") return { type: "disabled" };
+  // "enabled" with optional budget
+  const budget = subDef?.thinkingBudget
+    || parseInt((await getSetting("outworked_default_thinking_budget")) || "0")
+    || 0;
+  return budget
+    ? { type: "enabled", budgetTokens: budget }
+    : { type: "enabled" };
+}
 
 function buildToolPreamble(workspace: string): string {
   return `
@@ -73,6 +88,8 @@ export interface SendOptions {
   }) => void;
   onPermissionRequest?: (request: PermissionRequest) => void;
   onStderr?: (text: string) => void;
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
+  thinking?: ClaudeCodeAdvancedOptions["thinking"];
 }
 
 export interface SendMessageResult {
@@ -80,28 +97,11 @@ export interface SendMessageResult {
   cost?: number;
   inputTokens?: number;
   outputTokens?: number;
+  permissionDenials?: Array<{ tool_name: string; tool_use_id: string; tool_input: Record<string, unknown> }>;
+  structuredOutput?: unknown;
 }
 
 export async function sendMessage(
-  agent: Agent,
-  userMessage: string,
-  keys: ApiKeys,
-  onThought: (text: string) => void,
-  signal?: AbortSignal,
-  options?: SendOptions,
-): Promise<string> {
-  const result = await sendMessageWithCost(
-    agent,
-    userMessage,
-    keys,
-    onThought,
-    signal,
-    options,
-  );
-  return result.text;
-}
-
-export async function sendMessageWithCost(
   agent: Agent,
   userMessage: string,
   keys: ApiKeys,
@@ -131,49 +131,16 @@ export async function sendMessageWithCost(
   ];
 
   // Currently only Claude Code is supported — API-key-based providers are disabled
-  if (agent.provider === "claude-code") {
-    return callClaudeCode(
-      systemPrompt,
-      messages,
-      onThought,
-      signal,
-      agent,
-      options?.onClaudeCodeEvent,
-      options?.onPermissionRequest,
-      options?.onStderr,
-      useTools,
-    );
-  } else {
+  if (agent.provider !== "claude-code") {
     throw new Error(
       `Provider "${agent.provider}" is disabled. Only Claude Code (local) is supported. Switch this agent to Claude Code in the editor.`,
     );
   }
 
-}
-
-
-// ─── Claude Code CLI ──────────────────────────────────────────────
-// Uses the locally-installed `claude` CLI.
-// Uses runClaudeCode with stream-json for full event visibility
-// (tool calls, subagent activity, session metadata, cost tracking).
-
-async function callClaudeCode(
-  system: string,
-  messages: Message[],
-  onThought: (text: string) => void,
-  signal?: AbortSignal,
-  agent?: Agent,
-  onClaudeCodeEvent?: SendOptions["onClaudeCodeEvent"],
-  onPermissionRequest?: SendOptions["onPermissionRequest"],
-  onStderr?: SendOptions["onStderr"],
-  useTools = true,
-): Promise<SendMessageResult> {
   // When resuming a session, only send the latest user message — Claude Code
-  // already has the conversation history from the session.  Sending the full
-  // history again doubles input tokens and significantly slows responses.
+  // already has the conversation history from the session.
   let prompt = "";
-  if (agent?.sessionId && messages.length > 0) {
-    // Find the last user message
+  if (agent.sessionId && messages.length > 0) {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "user") {
         prompt = messages[i].content;
@@ -188,41 +155,46 @@ async function callClaudeCode(
     }
   }
 
-  const workspace = await getWorkspace();
-
-  // Always use advanced mode so we get cost/usage data back
-  return callClaudeCodeAdvanced(
+  return invokeClaudeCode({
     prompt,
-    system,
-    workspace,
+    systemPrompt: systemPrompt,
+    agent,
+    useTools,
     onThought,
     signal,
-    agent,
-    onClaudeCodeEvent,
-    onPermissionRequest,
-    onStderr,
-    useTools,
-  );
+    onClaudeCodeEvent: options?.onClaudeCodeEvent,
+    onPermissionRequest: options?.onPermissionRequest,
+    onStderr: options?.onStderr,
+    outputFormat: options?.outputFormat,
+    thinking: options?.thinking,
+  });
 }
 
-/**
- * Advanced Claude Code invocation with stream-json parsing.
- * Used for subagent-backed agents for rich tool/event visibility.
- */
-async function callClaudeCodeAdvanced(
-  prompt: string,
-  system: string,
-  workspace: string,
-  onThought: (text: string) => void,
-  signal?: AbortSignal,
-  agent?: Agent,
-  onClaudeCodeEvent?: SendOptions["onClaudeCodeEvent"],
-  onPermissionRequest?: SendOptions["onPermissionRequest"],
-  onStderr?: SendOptions["onStderr"],
-  useTools = true,
-): Promise<SendMessageResult> {
+
+// ─── Claude Code invocation ──────────────────────────────────────
+// Single entry point for all Claude Code SDK calls.
+
+interface InvokeOptions {
+  prompt: string;
+  systemPrompt: string;
+  agent?: Agent;
+  useTools?: boolean;
+  onThought: (text: string) => void;
+  signal?: AbortSignal;
+  onClaudeCodeEvent?: SendOptions["onClaudeCodeEvent"];
+  onPermissionRequest?: SendOptions["onPermissionRequest"];
+  onStderr?: SendOptions["onStderr"];
+  outputFormat?: SendOptions["outputFormat"];
+  thinking?: ClaudeCodeAdvancedOptions["thinking"];
+}
+
+async function invokeClaudeCode(opts: InvokeOptions): Promise<SendMessageResult> {
+  const { prompt, systemPrompt, agent, onThought, signal,
+    onClaudeCodeEvent, onPermissionRequest, onStderr, outputFormat, thinking } = opts;
+  const useTools = opts.useTools !== false;
   const subDef = agent?.subagentDef;
   const isResume = !!agent?.sessionId;
+  const workspace = await getWorkspace();
 
   // Build MCP servers list — include user-configured ones plus the always-running
   // outworked-skills server. Skip MCP when tools are disabled (e.g. router calls).
@@ -256,21 +228,28 @@ async function callClaudeCodeAdvanced(
     cwd: workspace,
     // Skip system prompt on resumed sessions — Claude Code already has it
     // from the initial session. Re-sending it wastes input tokens.
-    ...(isResume ? {} : { systemPrompt: system }),
-    model: subDef?.model || undefined,
-    // When useTools is false (e.g. router/planning calls), block all tools
-    // and force maxTurns: 1 so Claude Code returns text immediately.
+    ...(isResume ? {} : { systemPrompt }),
+    model: subDef?.model || (await getSetting("outworked_default_model")) || undefined,
+    // When useTools is false (e.g. router/planning calls), block all tools,
+    // force maxTurns: 1, use low effort, and don't persist the session.
     allowedTools: useTools ? allowedTools : [],
     disallowedTools: useTools ? subDef?.disallowedTools : undefined,
     maxTurns: useTools ? subDef?.maxTurns : 1,
+    effort: useTools
+      ? (subDef?.effort || (await getSetting("outworked_default_effort")) as ClaudeCodeAdvancedOptions["effort"] || undefined)
+      : "low",
+    persistSession: useTools ? undefined : false,
     permissionMode:
       (subDef?.permissionMode as ClaudeCodeAdvancedOptions["permissionMode"]) ||
       ((await getSetting("outworked_permission_prompts")) !== "0"
         ? "default"
         : "acceptEdits"),
     mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
-    continueSession: isResume,
-    resumeSessionId: agent?.sessionId,
+    // Use resume when we have an explicit session ID — don't also set continue,
+    // which resumes the *most recent* session and may not be ours.
+    ...(agent?.sessionId ? { resumeSessionId: agent.sessionId } : {}),
+    outputFormat,
+    thinking: thinking || (useTools ? await buildThinkingConfig(subDef) : { type: "disabled" as const }),
   };
 
   let fullText = "";
@@ -293,6 +272,13 @@ async function callClaudeCodeAdvanced(
       });
     },
     onEvent: (event) => {
+      // Surface assistant-level errors (rate limit, billing, auth, etc.)
+      if (event.type === "assistant" && event.error) {
+        onClaudeCodeEvent?.({
+          type: "assistant_error",
+          text: event.error,
+        });
+      }
       // Extract text from assistant messages for thinking previews
       let eventText: string | undefined;
       if (event.type === "result" && typeof event.result === "string") {
@@ -329,6 +315,8 @@ async function callClaudeCodeAdvanced(
     cost: result.cost,
     inputTokens: result.usage?.input_tokens,
     outputTokens: result.usage?.output_tokens,
+    permissionDenials: result.permissionDenials,
+    structuredOutput: result.structuredOutput,
   };
 }
 

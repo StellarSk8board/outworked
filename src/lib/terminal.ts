@@ -98,6 +98,13 @@ export interface ClaudeCodeAdvancedOptions {
   enableAgentTeams?: boolean;
   teammateMode?: "auto" | "in-process" | "tmux";
   timeoutMs?: number;
+  effort?: "low" | "medium" | "high" | "max";
+  fallbackModel?: string;
+  persistSession?: boolean;
+  forkSession?: boolean;
+  sessionId?: string;
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
+  thinking?: { type: "adaptive" } | { type: "enabled"; budgetTokens?: number } | { type: "disabled" };
 }
 
 export interface AgentFileInfo {
@@ -133,11 +140,14 @@ export interface ClaudeCodeEvent {
     stop_reason?: string | null;
     usage?: { input_tokens?: number; output_tokens?: number };
   };
+  // For assistant messages — error field
+  error?: string;
   // For result messages (type: "result")
   result?: string;
   is_error?: boolean;
   errors?: string[];
   duration_ms?: number;
+  duration_api_ms?: number;
   total_cost_usd?: number;
   num_turns?: number;
   stop_reason?: string | null;
@@ -145,10 +155,24 @@ export interface ClaudeCodeEvent {
     input_tokens?: number;
     output_tokens?: number;
   };
+  modelUsage?: Record<string, { input_tokens: number; output_tokens: number }>;
+  permission_denials?: Array<{
+    tool_name: string;
+    tool_use_id: string;
+    tool_input: Record<string, unknown>;
+  }>;
+  structured_output?: unknown;
   // For system messages (type: "system", subtype: "init")
   tools?: string[];
   model?: string;
   permissionMode?: string;
+  cwd?: string;
+  claude_code_version?: string;
+  agents?: string[];
+  mcp_servers?: Array<{ name: string; status: string }>;
+  skills?: string[];
+  // For compact_boundary messages (type: "system", subtype: "compact_boundary")
+  compact_metadata?: { trigger: "manual" | "auto"; pre_tokens: number };
   // For stream_event (partial messages)
   event?: {
     type?: string;
@@ -390,9 +414,23 @@ export interface PermissionRequest {
   agentName?: string;
 }
 
+export interface ClaudeCodeResult {
+  result: string;
+  sessionId?: string;
+  cost?: number;
+  usage?: { input_tokens: number; output_tokens: number };
+  durationMs?: number;
+  numTurns?: number;
+  stopReason?: string | null;
+  subtype?: string;
+  modelUsage?: Record<string, { input_tokens: number; output_tokens: number }>;
+  permissionDenials?: Array<{ tool_name: string; tool_use_id: string; tool_input: Record<string, unknown> }>;
+  structuredOutput?: unknown;
+}
+
 export interface ClaudeCodeStreamCallbacks {
   onTextDelta?: (text: string) => void;
-  onToolUse?: (name: string, input: Record<string, unknown>) => void;
+  onToolUse?: (name: string, input: Record<string, unknown>, toolUseId?: string) => void;
   onToolResult?: (content: string, isError: boolean) => void;
   onEvent?: (event: ClaudeCodeEvent) => void;
   onStderr?: (text: string) => void;
@@ -403,12 +441,7 @@ export async function runClaudeCode(
   options: ClaudeCodeAdvancedOptions,
   callbacks: ClaudeCodeStreamCallbacks,
   signal?: AbortSignal,
-): Promise<{
-  result: string;
-  sessionId?: string;
-  cost?: number;
-  usage?: { input_tokens: number; output_tokens: number };
-}> {
+): Promise<ClaudeCodeResult> {
   const api = getAPI();
   if (!api?.claudeCode) {
     throw new Error(
@@ -430,6 +463,13 @@ export async function runClaudeCode(
     let sessionId: string | undefined;
     let cost: number | undefined;
     let usage: { input_tokens: number; output_tokens: number } | undefined;
+    let durationMs: number | undefined;
+    let numTurns: number | undefined;
+    let stopReason: string | null | undefined;
+    let subtype: string | undefined;
+    let modelUsage: Record<string, { input_tokens: number; output_tokens: number }> | undefined;
+    let permissionDenials: ClaudeCodeResult["permissionDenials"] | undefined;
+    let structuredOutput: unknown;
 
     // Dead-session detection: if heartbeats stop arriving from the main
     // process for 45s, the SDK session has silently died.
@@ -461,6 +501,11 @@ export async function runClaudeCode(
         if (id !== reqId) return;
         callbacks.onEvent?.(event);
 
+        // Surface assistant-level errors (rate_limit, billing_error, etc.)
+        if (event.type === "assistant" && event.error) {
+          callbacks.onEvent?.(event);
+        }
+
         // Extract text from assistant messages
         if (event.type === "assistant" && event.message?.content) {
           const content = event.message.content;
@@ -475,6 +520,7 @@ export async function runClaudeCode(
                 callbacks.onToolUse?.(
                   block.name,
                   (block.input as Record<string, unknown>) || {},
+                  block.id,
                 );
               }
             }
@@ -504,6 +550,36 @@ export async function runClaudeCode(
               input_tokens: event.usage.input_tokens || 0,
               output_tokens: event.usage.output_tokens || 0,
             };
+          }
+          durationMs = event.duration_ms;
+          numTurns = event.num_turns;
+          stopReason = event.stop_reason;
+          subtype = event.subtype;
+          modelUsage = event.modelUsage;
+          permissionDenials = event.permission_denials;
+          structuredOutput = event.structured_output;
+
+          // Resolve on the result event itself as a safeguard: if the SDK's
+          // async generator hangs after producing the result, onDone never
+          // fires and the UI stays stuck. The result event contains all the
+          // data we need, so resolve here. onDone acts as a fallback.
+          if (!settled) {
+            settled = true;
+            cleanup();
+            if (event.is_error) {
+              const subtypeLabel: Record<string, string> = {
+                error_max_turns: "Reached maximum turns",
+                error_max_budget_usd: "Exceeded budget limit",
+                error_during_execution: "Error during execution",
+                error_max_structured_output_retries: "Structured output validation failed",
+              };
+              const prefix = (subtype && subtypeLabel[subtype]) || "Claude Code error";
+              const detail =
+                resultErrors.join("; ") || stderrText.trim() || fullText || "";
+              reject(new Error(detail ? `${prefix}: ${detail}` : prefix));
+            } else {
+              resolve({ result: fullText, sessionId, cost, usage, durationMs, numTurns, stopReason, subtype, modelUsage, permissionDenials, structuredOutput });
+            }
           }
         }
       },
@@ -541,17 +617,21 @@ export async function runClaudeCode(
           ),
         );
       } else if (code !== 0) {
+        // Use the SDK result subtype for a human-readable prefix
+        const subtypeLabel: Record<string, string> = {
+          error_max_turns: "Reached maximum turns",
+          error_max_budget_usd: "Exceeded budget limit",
+          error_during_execution: "Error during execution",
+          error_max_structured_output_retries: "Structured output validation failed",
+        };
+        const prefix = (subtype && subtypeLabel[subtype]) || `Claude Code exited with code ${code}`;
         const detail =
           resultErrors.join("; ") || stderrText.trim() || fullText || "";
         reject(
-          new Error(
-            detail
-              ? `Claude Code exited with code ${code}: ${detail}`
-              : `Claude Code exited with code ${code}`,
-          ),
+          new Error(detail ? `${prefix}: ${detail}` : prefix),
         );
       } else {
-        resolve({ result: fullText, sessionId, cost, usage });
+        resolve({ result: fullText, sessionId, cost, usage, durationMs, numTurns, stopReason, subtype, modelUsage, permissionDenials, structuredOutput });
       }
     });
 
