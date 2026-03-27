@@ -1357,6 +1357,7 @@ export default function App() {
             const existing = await loadGlobalSkillIds();
             if (existing.length === 0) {
               await saveGlobalSkillIds(["bundled:browser", "bundled:scheduler"]);
+              window.dispatchEvent(new Event("global-skills-changed"));
             }
             setShowOnboarding(false);
           }}

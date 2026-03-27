@@ -6,10 +6,6 @@
 
 > The `.zip`, `.blockmap`, and `.yml` files are for auto-updates — you don't need to download these manually. Existing installs will update automatically.
 
-## What's New
-
--
-
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated

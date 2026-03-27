@@ -100,6 +100,14 @@ export default function ClaudeCodeStatus() {
     }
   }, []);
 
+  const reloadGlobalSkills = useCallback(async () => {
+    const ids = await loadGlobalSkillIds();
+    const skills = (
+      await Promise.all(ids.map((id) => fetchSkill(id)))
+    ).filter((s): s is AgentSkill => s !== undefined);
+    setGlobalSkills(skills);
+  }, []);
+
   useEffect(() => {
     if (isElectron()) {
       checkStatus();
@@ -109,12 +117,7 @@ export default function ClaudeCodeStatus() {
         setGlobalMcpServers(settingsToMcpArray(settings.mcpServers));
       });
       // Load global skills from app_settings
-      loadGlobalSkillIds().then(async (ids) => {
-        const skills = (
-          await Promise.all(ids.map((id) => fetchSkill(id)))
-        ).filter((s): s is AgentSkill => s !== undefined);
-        setGlobalSkills(skills);
-      });
+      reloadGlobalSkills();
     } else {
       setStatus({
         installed: false,
@@ -124,7 +127,14 @@ export default function ClaudeCodeStatus() {
         error: "Not running in Electron",
       });
     }
-  }, [checkStatus]);
+  }, [checkStatus, reloadGlobalSkills]);
+
+  // Re-fetch global skills when they are seeded (e.g. after onboarding)
+  useEffect(() => {
+    const handler = () => reloadGlobalSkills();
+    window.addEventListener("global-skills-changed", handler);
+    return () => window.removeEventListener("global-skills-changed", handler);
+  }, [reloadGlobalSkills]);
 
   function updateDefault<K extends keyof GlobalSessionDefaults>(
     key: K,
