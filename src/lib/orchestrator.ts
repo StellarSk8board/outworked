@@ -938,7 +938,15 @@ ${
 - NEVER delegate to yourself (the Boss). You coordinate — employees do the work. Your name is NOT in the team roster for a reason.
 - NEVER use the Agent tool to spawn "helper" or "general-purpose" sub-agents for yourself. Every delegation must target a specific employee (existing or new).
 - Keep delegations focused — do NOT chain agents (an agent delegating to another agent). Each agent should complete its own task independently.`
-    : `- No employees yet. Tell the user to hire employees first, or answer the question yourself.`
+    : `- For simple questions, informational requests, or quick answers (e.g. "how do I run this?", "what does X do?", "explain Y"), respond directly yourself. You have full context of the project workspace and can read files to answer questions.
+- No employees exist yet. For implementation tasks (writing code, creating files, building features, fixing bugs), you MUST create new specialist agents via the Agent tool to handle the work. Do NOT do implementation yourself.
+- Assess the task and create the right specialists for it. Give each agent a clear, unique name and a descriptive prompt defining their expertise.
+- Break complex tasks into subtasks and delegate to the right specialist(s).
+- Delegate to multiple agents in parallel when subtasks are independent.
+- After delegations complete, provide a brief summary.
+- NEVER delegate to yourself (the Boss). You coordinate — employees do the work.
+- NEVER use the Agent tool to spawn "helper" or "general-purpose" sub-agents for yourself. Every delegation must target a specific specialist.
+- Keep delegations focused — do NOT chain agents (an agent delegating to another agent). Each agent should complete its own task independently.`
 }`;
 
   const options: ClaudeCodeAdvancedOptions = {
