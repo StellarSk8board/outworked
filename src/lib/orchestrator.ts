@@ -124,7 +124,7 @@ WEB PREVIEW — serving and sharing websites:
 - When a task involves creating a website, landing page, or any HTML/frontend project, the FINAL subtask for the responsible agent MUST be to start a local web server (e.g. "npx serve ." or "npx serve dist" or "npm run dev") so the user can preview the result.
 - The app will automatically detect the local server URL and open a preview window for the user.
 - Do NOT tell the agent to open a browser — just start the server. The preview is handled automatically.
-- To share the site with someone externally, the agent should use the tunnel_start tool to get a public URL, then use send_message to share the link via iMessage or Slack.
+- To share the site with someone externally, the agent should use the tunnel_start tool to get a public URL, then use send_message to share the link via a connected channel (e.g. Slack).
 
 TUNNEL HOST CONFIG — IMPORTANT when using tunnel_start:
 - Tunnels expose local servers via a public URL with a different hostname. Dev servers like Vite and Next.js block requests from unknown hosts by default, so the tunnel will show errors unless you configure them first.

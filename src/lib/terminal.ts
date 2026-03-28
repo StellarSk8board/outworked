@@ -191,9 +191,18 @@ export interface ClaudeCodeEvent {
   };
 }
 
+/** Mirrors CAPABILITIES from electron/platform.js, serialised via preload. */
+export interface PlatformCapabilities {
+  imessage: boolean;
+  unixProcessGroup: boolean;
+  loginShell: boolean;
+  macNotarization: boolean;
+}
+
 interface ElectronAPI {
   isElectron: boolean;
   platform: string;
+  capabilities: PlatformCapabilities;
   homedir: string;
   shell: {
     spawn: (cwd?: string) => Promise<number>;
@@ -321,6 +330,28 @@ function getAPI(): ElectronAPI | null {
 export function getHomedir(): string {
   const api = getAPI();
   return api?.homedir || "~";
+}
+
+/** Returns the current Electron platform string, e.g. "win32", "darwin", "linux". */
+export function getPlatform(): string {
+  const api = getAPI();
+  return api?.platform ?? "";
+}
+
+/**
+ * Returns platform feature flags from electron/platform.js.
+ * Safe to call in the renderer — returns all-false defaults when not in Electron.
+ */
+export function getCapabilities(): PlatformCapabilities {
+  const api = getAPI();
+  return (
+    api?.capabilities ?? {
+      imessage: false,
+      unixProcessGroup: false,
+      loginShell: false,
+      macNotarization: false,
+    }
+  );
 }
 
 export function onClaudeAgentsChanged(cb: () => void): () => void {

@@ -15,6 +15,7 @@ const { spawn, execSync, execFileSync } = require("child_process");
 const crypto = require("crypto");
 const { autoUpdater } = require("electron-updater");
 const sdkBridge = require("./sdk-bridge");
+const { IS_WIN, HOME } = require("./platform");
 
 // Set the app name early so macOS notifications show "Outworked" instead of "Electron"
 app.setName("Outworked");
@@ -217,17 +218,21 @@ function getShellCmd() {
 const SHELL_CMD = getShellCmd();
 
 // Augment PATH with common locations where `claude` may be installed.
-// Electron launched from Finder/Dock inherits a minimal PATH that
-// often doesn't include ~/.local/bin or ~/.claude/bin even when the
-// user's .zshrc adds them.
+// Electron launched from Finder/Dock (or the Windows Start menu) inherits
+// a minimal PATH that may not include the user's local bin directories.
 function augmentedEnv(extra) {
-  const home = process.env.HOME || "";
-  const extraPaths = [
-    path.join(home, ".local", "bin"),
-    path.join(home, ".claude", "bin"),
-    path.join(home, "bin"),
-    "/usr/local/bin",
-  ].filter(Boolean);
+  const extraPaths = IS_WIN
+    ? [
+        // Windows: Claude installs to %USERPROFILE%\.claude\bin\
+        path.join(HOME, ".claude", "bin"),
+      ]
+    : [
+        // macOS / Linux: check .local/bin, .claude/bin, ~/bin, /usr/local/bin
+        path.join(HOME, ".local", "bin"),
+        path.join(HOME, ".claude", "bin"),
+        path.join(HOME, "bin"),
+        "/usr/local/bin",
+      ];
   const currentPath = process.env.PATH || "";
   const newPath = [...extraPaths, currentPath].join(path.delimiter);
   return { ...process.env, PATH: newPath, ...(extra || {}) };
@@ -245,12 +250,19 @@ function killShellTree(proc) {
   if (!proc || proc.killed) return;
   const pid = proc.pid;
   if (!pid) { proc.kill(); return; }
-  try {
-    // Kill the entire process group — on Unix, passing -pid kills all children
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    // Fallback: kill just the shell process (e.g. if not a process group leader)
-    try { proc.kill("SIGTERM"); } catch { /* already dead */ }
+  if (IS_WIN) {
+    // taskkill /F /T kills the process and every child it spawned
+    try {
+      execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], { timeout: 5000 });
+    } catch { /* process already exited or not found — safe to ignore */ }
+  } else {
+    try {
+      // Kill the entire process group — on Unix, passing -pid kills all children
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Fallback: kill just the shell process (e.g. if not a process group leader)
+      try { proc.kill("SIGTERM"); } catch { /* already dead */ }
+    }
   }
 }
 
@@ -325,12 +337,12 @@ function setupShellIPC() {
   // Spawn a new shell session
   ipcMain.handle("shell:spawn", (_event, cwd) => {
     const id = crypto.randomUUID();
-    const safeCwd = validateDir(cwd || process.env.HOME);
+    const safeCwd = validateDir(cwd || HOME);
     const isWin = process.platform === "win32";
     const proc = isWin
       ? spawn("cmd.exe", [], {
           cwd: safeCwd,
-          env: augmentedEnv({ TERM: "xterm-256color" }),
+          env: augmentedEnv(),
         })
       : spawn(SHELL_CMD, ["-l"], {
           cwd: safeCwd,
@@ -415,7 +427,7 @@ function setupShellIPC() {
 
       let execCwd;
       try {
-        execCwd = validateDir(cwd || process.env.HOME);
+        execCwd = validateDir(cwd || HOME);
       } catch (err) {
         resolve({
           ok: false,
@@ -445,7 +457,7 @@ function setupShellIPC() {
       const proc = isWin
         ? spawn(command, {
             cwd: execCwd,
-            env: augmentedEnv({ TERM: "dumb", ...extraEnv }),
+            env: augmentedEnv(extraEnv),
             timeout: timeoutMs || 30000,
             shell: true,
           })
@@ -499,7 +511,7 @@ function setupShellIPC() {
     "claude-code:start",
     (_event, prompt, systemPrompt, cwd, timeoutMs) => {
       const reqId = crypto.randomUUID();
-      const execCwd = cwd || process.env.HOME;
+      const execCwd = cwd || HOME;
       try {
         ensureDirWritable(execCwd);
       } catch {
@@ -555,7 +567,7 @@ function setupShellIPC() {
 
   ipcMain.handle("claude-code:startAdvanced", (_event, options) => {
     const reqId = crypto.randomUUID();
-    const execCwd = options.cwd || process.env.HOME;
+    const execCwd = options.cwd || HOME;
     try {
       ensureDirWritable(execCwd);
     } catch {
@@ -651,13 +663,13 @@ function setupShellIPC() {
   // List available subagents from the claude CLI
   ipcMain.handle("claude-code:listAgents", (_event, cwd) => {
     return new Promise((resolve) => {
-      const execCwd = cwd || process.env.HOME;
+      const execCwd = cwd || HOME;
       const isWin = process.platform === "win32";
       const cmd = "claude agents";
       const proc = isWin
         ? spawn("cmd.exe", ["/c", cmd], {
             cwd: execCwd,
-            env: augmentedEnv({ TERM: "dumb" }),
+            env: augmentedEnv(),
             timeout: 15000,
           })
         : spawn(SHELL_CMD, ["-l", "-c", cmd], {
@@ -689,7 +701,7 @@ function setupShellIPC() {
       const cmd = "claude --version";
       const proc = isWin
         ? spawn("cmd.exe", ["/c", cmd], {
-            env: augmentedEnv({ TERM: "dumb" }),
+            env: augmentedEnv(),
             timeout: 10000,
           })
         : spawn(SHELL_CMD, ["-l", "-c", cmd], {
@@ -717,13 +729,13 @@ function setupShellIPC() {
         error: null,
       };
       const isWin = process.platform === "win32";
-      const home = process.env.HOME || process.env.USERPROFILE || "";
+      const home = HOME;
 
       // Step 1: check version via CLI
       const vCmd = "claude --version";
       const vProc = isWin
         ? spawn("cmd.exe", ["/c", vCmd], {
-            env: augmentedEnv({ TERM: "dumb" }),
+            env: augmentedEnv(),
             timeout: 10000,
           })
         : spawn(SHELL_CMD, ["-l", "-c", vCmd], {
@@ -831,7 +843,7 @@ function setupShellIPC() {
 
   // Read subagent .md files from ~/.claude/agents/ and <cwd>/.claude/agents/
   ipcMain.handle("claude-code:readAgentFiles", (_event, cwd) => {
-    const home = process.env.HOME || "";
+    const home = HOME;
     const userDir = path.join(home, ".claude", "agents");
     const results = [];
     const dirs = [{ dir: userDir, scope: "user" }];
@@ -931,7 +943,7 @@ function setupShellIPC() {
   // ─── Auto-watch agent directories ───────────────────────────────
   // Watch ~/.claude/agents/ for changes and notify the renderer.
   const agentWatchers = [];
-  const userAgentDir = path.join(process.env.HOME || "", ".claude", "agents");
+  const userAgentDir = path.join(HOME, ".claude", "agents");
 
   function notifyAgentsChanged() {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1029,7 +1041,7 @@ app.on("before-quit", () => {
 });
 
 // ─── Filesystem IPC ───────────────────────────────────────────────
-let workspaceDir = path.join(process.env.HOME || "", "outworked-workspace");
+let workspaceDir = path.join(HOME, "outworked-workspace");
 
 function ensureDir(dirPath) {
   ensureDirWritable(dirPath);
@@ -1062,6 +1074,11 @@ function validateDir(dir) {
     "/var",
     "/System",
     "/Library",
+    // Windows system roots
+    "C:\\",
+    "C:\\Windows",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
   ];
   if (blockedRoots.includes(resolved)) {
     throw new Error(`Refusing to operate in system directory: ${resolved}`);
@@ -1088,6 +1105,11 @@ function setupFilesystemIPC() {
       "/var",
       "/System",
       "/Library",
+      // Windows system roots
+      "C:\\",
+      "C:\\Windows",
+      "C:\\Program Files",
+      "C:\\Program Files (x86)",
     ];
     if (blockedRoots.includes(resolved)) {
       throw new Error(`Cannot set workspace to system directory: ${resolved}`);
@@ -2002,7 +2024,7 @@ function setupPermissionsIPC() {
   // scope: 'project' → <workspace>/.claude/settings.json
   ipcMain.handle("claude-settings:read", (_event, scope) => {
     try {
-      const home = process.env.HOME || "";
+      const home = HOME;
       const filePath =
         scope === "project"
           ? path.join(workspaceDir, ".claude", "settings.json")
@@ -2020,7 +2042,7 @@ function setupPermissionsIPC() {
   // Write Claude settings.json
   ipcMain.handle("claude-settings:write", (_event, scope, settings) => {
     try {
-      const home = process.env.HOME || "";
+      const home = HOME;
       const filePath =
         scope === "project"
           ? path.join(workspaceDir, ".claude", "settings.json")
@@ -2541,7 +2563,7 @@ app.whenReady().then(() => {
   // Clean up any stale outworked-skills entry from Claude Code's settings.json.
   // MCP is now injected per-session via SDK options as an HTTP server.
   try {
-    const home = process.env.HOME || "";
+    const home = HOME;
     const settingsPath = path.join(home, ".claude", "settings.json");
     if (fs.existsSync(settingsPath)) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));

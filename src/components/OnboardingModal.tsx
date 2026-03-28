@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
+  getCapabilities,
+  getPlatform,
   getClaudeCodeAuthStatus,
   isElectron,
   writeClaudeSettings,
@@ -50,6 +52,10 @@ export default function OnboardingModal({
   onOpenPerms,
   permsModalOpen,
 }: Props) {
+  // Stable at render — platform never changes during a session.
+  const capabilities = getCapabilities();
+  const isWin = getPlatform() === "win32";
+
   const [step, setStep] = useState<Step>("welcome");
   const [ccInstalled, setCcInstalled] = useState(false);
   const [ccAuthed, setCcAuthed] = useState(false);
@@ -190,12 +196,24 @@ export default function OnboardingModal({
                   </div>
                   {!ccInstalled && (
                     <div className="ml-6">
-                      <p className="text-[11px] text-slate-400 mb-1.5">
-                        Run this in your terminal:
-                      </p>
-                      <code className="block bg-slate-950 rounded px-3 py-1.5 text-[11px] font-mono text-amber-300 select-all">
-                        curl -fsSL https://claude.ai/install.sh | bash
-                      </code>
+                      {isWin ? (
+                        <p className="text-[11px] text-slate-400">
+                          Download the Claude Code installer for Windows from{" "}
+                          <span className="text-amber-300 font-mono select-all">
+                            claude.ai/code
+                          </span>
+                          , then run it and restart this app.
+                        </p>
+                      ) : (
+                        <>
+                          <p className="text-[11px] text-slate-400 mb-1.5">
+                            Run this in your terminal:
+                          </p>
+                          <code className="block bg-slate-950 rounded px-3 py-1.5 text-[11px] font-mono text-amber-300 select-all">
+                            curl -fsSL https://claude.ai/install.sh | bash
+                          </code>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -342,17 +360,20 @@ export default function OnboardingModal({
                   </div>
                   <p className="text-[11px] text-slate-400 mb-3">
                     Channels connect your agents to external messaging platforms
-                    like iMessage and Slack. When a message arrives, it gets
-                    routed to an agent who can read and reply automatically.
+                    like {capabilities.imessage ? "iMessage and " : ""}Slack.
+                    When a message arrives, it gets routed to an agent who can
+                    read and reply automatically.
                   </p>
                   <div className="space-y-1.5 text-[11px] text-slate-400">
-                    <div className="flex items-start gap-2">
-                      <span className="text-indigo-400 mt-0.5 shrink-0">▸</span>
-                      <span>
-                        <span className="text-slate-200">iMessage</span> —
-                        read & reply to texts on macOS
-                      </span>
-                    </div>
+                    {capabilities.imessage && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-indigo-400 mt-0.5 shrink-0">▸</span>
+                        <span>
+                          <span className="text-slate-200">iMessage</span> —
+                          read & reply to texts on macOS
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-start gap-2">
                       <span className="text-indigo-400 mt-0.5 shrink-0">▸</span>
                       <span>

@@ -10,10 +10,11 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
-    "electron:dev": "vite build && VERBOSE_LOGGING=true electron .",
+    "postinstall": "electron-rebuild -f -w better-sqlite3 || echo \"WARN: electron-rebuild failed — run 'npm run postinstall' after installing Visual Studio Build Tools\"",
+    "electron:dev": "vite build && cross-env VERBOSE_LOGGING=true electron .",
     "electron:build": "vite build && electron-builder --config electron-builder.yml",
     "electron:publish": "vite build && electron-builder --config electron-builder.yml --publish always",
+    "generate-ico": "node scripts/generate-ico.js",
     "version": "bash scripts/bump-version.sh"
   },
   "dependencies": {
@@ -22,7 +23,9 @@
     "electron-updater": "^6.8.3"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
     "@eslint/js": "^10.0.1",
+    "cross-env": "^7.0.3",
     "@tailwindcss/vite": "^4.2.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.5.0",
@@ -37,6 +40,7 @@
     "globals": "^17.4.0",
     "jiti": "^2.6.1",
     "phaser": "^3.90.0",
+    "png-to-ico": "^2.1.8",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",

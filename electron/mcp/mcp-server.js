@@ -13,6 +13,7 @@ const path = require("path");
 const os = require("os");
 const { spawn, execFileSync } = require("child_process");
 const db = require("../db/database");
+const { IS_WIN, CAPABILITIES } = require("../platform");
 const verbose = process.env.VERBOSE_LOGGING === "true";
 
 // ─── Cloudflared tunnel management ──────────────────────────────
@@ -102,7 +103,7 @@ async function ensureCloudflared() {
 
   // Check if system-installed
   try {
-    const systemPath = execFileSync("which", ["cloudflared"], {
+    const systemPath = execFileSync(IS_WIN ? "where" : "which", ["cloudflared"], {
       encoding: "utf8",
       timeout: 3000,
     }).trim();
@@ -139,8 +140,8 @@ async function ensureCloudflared() {
     await downloadFile(url, CLOUDFLARED_BIN);
   }
 
-  // Make executable
-  fs.chmodSync(CLOUDFLARED_BIN, 0o755);
+  // Make executable (chmod is a no-op on Windows)
+  if (!IS_WIN) fs.chmodSync(CLOUDFLARED_BIN, 0o755);
   verbose && console.log(`[mcp] cloudflared installed at ${CLOUDFLARED_BIN}`);
   return CLOUDFLARED_BIN;
 }
@@ -197,7 +198,7 @@ const BUILTIN_TOOLS = [
   {
     name: "send_message",
     description:
-      'Send a message through a connected messaging channel (iMessage, Slack, etc). Use list_channels first to discover available channels. For Slack threads, use "CHANNEL_ID:THREAD_TS" as the conversationId.',
+      `Send a message through a connected messaging channel (${CAPABILITIES.imessage ? "iMessage, " : ""}Slack, etc). Use list_channels first to discover available channels. For Slack threads, use "CHANNEL_ID:THREAD_TS" as the conversationId.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -207,8 +208,9 @@ const BUILTIN_TOOLS = [
         },
         conversationId: {
           type: "string",
-          description:
-            'Recipient — phone number/email for iMessage, Slack channel ID, or "CHANNEL_ID:THREAD_TS" for threaded replies',
+          description: CAPABILITIES.imessage
+            ? 'Recipient — phone number/email for iMessage, Slack channel ID, or "CHANNEL_ID:THREAD_TS" for threaded replies'
+            : 'Recipient — Slack channel ID, or "CHANNEL_ID:THREAD_TS" for threaded replies',
         },
         content: { type: "string", description: "Message text to send" },
       },

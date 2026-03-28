@@ -4,6 +4,8 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
+const { IS_WIN } = require("./platform");
 const verbose = process.env.VERBOSE_LOGGING === "true";
 // The SDK is ESM-only, so we use dynamic import (cached after first call).
 let _queryFn = null;
@@ -23,13 +25,21 @@ let _claudeExePath = null;
 function getClaudeExecutablePath() {
   if (_claudeExePath) return _claudeExePath;
 
-  const home = process.env.HOME || "";
-  // Common install locations (same paths augmentedEnv adds to PATH)
-  const candidates = [
-    path.join(home, ".claude", "bin", "claude"),
-    path.join(home, ".local", "bin", "claude"),
-    "/usr/local/bin/claude",
-  ];
+  const home = os.homedir(); // cross-platform: works on Windows and Unix
+  const ext = IS_WIN ? ".exe" : "";
+
+  // Platform-specific candidate install locations
+  const candidates = IS_WIN
+    ? [
+        // Windows: installer places the binary at %USERPROFILE%\.claude\bin\claude.exe
+        path.join(home, ".claude", "bin", `claude${ext}`),
+      ]
+    : [
+        // macOS / Linux: curl installer places the binary here
+        path.join(home, ".claude", "bin", "claude"),
+        path.join(home, ".local", "bin", "claude"),
+        "/usr/local/bin/claude",
+      ];
 
   for (const p of candidates) {
     try {
@@ -37,16 +47,20 @@ function getClaudeExecutablePath() {
       _claudeExePath = p;
       return _claudeExePath;
     } catch {
-      // not found / not executable
+      // not found / not executable — try the next candidate
     }
   }
 
-  // Fallback: ask the shell (works if claude is on the user's login PATH)
+  // Fallback: ask the OS path resolver
+  // `where` on Windows, `which` on Unix
+  const finder = IS_WIN ? "where" : "which";
   try {
-    _claudeExePath = execFileSync("which", ["claude"], {
+    const found = execFileSync(finder, ["claude"], {
       encoding: "utf8",
       timeout: 3000,
     }).trim();
+    // `where` on Windows may return multiple matches, one per line — take the first
+    _claudeExePath = found.split(/\r?\n/)[0].trim();
     if (_claudeExePath) return _claudeExePath;
   } catch {
     // not on PATH
@@ -113,7 +127,7 @@ async function startSession(reqId, options, callbacks) {
 
   // Build SDK options from ClaudeCodeAdvancedOptions
   const sdkOptions = {
-    cwd: options.cwd || process.env.HOME,
+    cwd: options.cwd || os.homedir(),
     abortController,
     // Load all filesystem settings (user, project, local) so CLAUDE.md,
     // permissions, and MCP servers configured in settings.json are available.

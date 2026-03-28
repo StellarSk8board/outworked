@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const { CAPABILITIES } = require("./platform");
 
 // Extract homedir from additionalArguments (sandbox prevents os module access)
 const homedirArg = process.argv.find((a) => a.startsWith("--homedir="));
@@ -8,6 +9,9 @@ const homedir = homedirArg ? homedirArg.slice("--homedir=".length) : "~";
 contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
   platform: process.platform,
+  // Feature flags — use these in the renderer instead of checking platform directly.
+  // Mirrors electron/platform.js CAPABILITIES (serialised as a plain object).
+  capabilities: { ...CAPABILITIES },
   homedir,
 
   // Filesystem
